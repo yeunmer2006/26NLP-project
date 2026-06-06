@@ -1,10 +1,34 @@
-# Small LLM Pretraining and Batch Invariance Experiments
+# TinyLlama-style Pretraining, FlashAttention-2, and Batch Invariance
 
-课程项目：在单张 12-24GB GPU 上训练 TinyLlama-style decoder-only 模型，并研究
-attention 性能、batch composition 对确定性推理的影响，以及浮点归约顺序。
+课程项目：复现 TinyLlama 架构族的小型语言模型预训练流程，评估
+FlashAttention-2 加速效果，并研究 batch size/composition 为什么会破坏
+`temperature=0` 推理的逐比特确定性。
 
 模型实现包含 RMSNorm、RoPE、GQA、SwiGLU 和 causal LM objective。30M 配置是主实验，
 60M 只做短 token 预算对照，100M 只做参数量和单步显存可行性检查。
+
+> 本仓库的可训练主模型是 **TinyLlama-style 30M 模型**，不是对 TinyLlama 1.1B
+> 完整训练成本的宣称复现。TinyLlama 1.1B、Qwen3-8B 和 vLLM 连续批处理实验属于
+> 有足够显存和时间时的扩展复现。
+
+## 研究问题
+
+1. 在固定 token 预算下，TinyLlama-style 模型能否完成可复现的预训练、验证和生成？
+2. FlashAttention-2 相对 eager/SDPA 在不同 batch size 和 sequence length 下有多大
+   延迟、吞吐和显存收益？
+3. 当目标 prompt 所在批次的大小和组成变化时，logits 与 greedy output 是否变化？
+4. 固定归约/矩阵乘法策略能否恢复 batch invariance，代价是多少？
+
+`temperature=0` 只固定了 token 选择规则，并不保证底层算子产生逐比特相同的 logits。
+本项目检验的因果链是：
+
+```text
+continuous/dynamic batching
+  -> kernel strategy or reduction order changes
+  -> floating-point logits drift
+  -> near-tie token ranking changes
+  -> greedy generation diverges
+```
 
 ## Conda 环境
 
@@ -110,9 +134,24 @@ python -m src.infer.generate \
 6. 30M/60M/100M 参数及单步显存检查；
 7. 从 CSV 自动生成报告图表。
 
+核心对照分三层：
+
+- **现象层**：固定 prompt 和模型，改变 batch size、伴随 prompt 长度及 attention
+  backend，记录最大 logits 差异、top-k 变化和首个生成分叉。
+- **机制层**：用不同浮点归约顺序重现数值漂移，再用 fixed-tree 归约验证固定计算图
+  可以恢复一致性。
+- **系统层（扩展）**：参考 Thinking Machines Lab 的
+  [`batch_invariant_ops`](https://github.com/thinking-machines-lab/batch_invariant_ops)，
+  在 vLLM 连续批处理中并发提交 1000 个 `temperature=0` 请求，对比默认算子与通过
+  `torch.library` 替换后的批次不变算子。
+
 FlashAttention-2、CUDA 或某种 dtype 不可用时，实验写入 `skipped/error` 和原因，
 不会伪造测量值。Attention benchmark 是算子级 microbenchmark，不代表完整 serving
 吞吐。
+
+以下数字只能作为外部基线，不能预填为本项目结论：Thinking Machines Lab 的公开
+示例在 1000 次并发生成中从 18 个不同输出降到 1 个；确定性模式的性能损失必须在
+本机报告 latency、tokens/s 和相对变化，不能预设为 20%。
 
 单独运行：
 
@@ -156,3 +195,12 @@ python -m compileall -q src tests
 
 当前实现不包含 KV cache、SGLang/vLLM、完整 100M 训练或通用模型质量评测。这些内容
 保留为后续工作。
+
+## 参考资料
+
+- [TinyLlama repository](https://github.com/jzhang38/TinyLlama)
+- [FlashAttention-2 paper](https://arxiv.org/abs/2307.08691)
+- [Thinking Machines Lab: Defeating Nondeterminism in LLM Inference](https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/)
+- [Thinking Machines Lab batch-invariant operators](https://github.com/thinking-machines-lab/batch_invariant_ops)
+- [DeepSeek-V4 technical report](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/DeepSeek_V4.pdf)
+- [DeepGEMM](https://github.com/deepseek-ai/DeepGEMM)

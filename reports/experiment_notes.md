@@ -30,19 +30,35 @@
 ## Experiment 3: Batch Sensitivity
 
 - Checkpoint:
-- Target prompt:
+- Prompts/compositions:
+- Backend/dtype:
 - Largest logits difference:
+- Top-1/top-5 changes:
 - First output divergence:
+- Conditions with no divergence:
 - Observations:
 
-## Experiment 4/5: Reduction
+## Experiment 4: 1000-request Serving Reproduction
+
+- Model/server:
+- vLLM/PyTorch/CUDA versions:
+- Request concurrency:
+- Temperature/max tokens:
+- Default-kernel unique outputs:
+- Batch-invariant unique outputs:
+- Bitwise-identical rate:
+- Status (completed/skipped):
+
+## Experiment 5: Reduction and Operator Replacement
 
 - Dtypes:
 - Order-dependent results:
 - Fixed-tree consistency:
-- Runtime trade-off:
+- Replaced operators:
+- Default latency/tokens per second:
+- Invariant latency/tokens per second:
+- Measured performance change:
 
 ## Limitations
 
 - 
-
