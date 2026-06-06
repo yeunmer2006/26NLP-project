@@ -1,205 +1,158 @@
 # Small LLM Pretraining and Batch Invariance Experiments
 
-## 项目背景
+课程项目：在单张 12-24GB GPU 上训练 TinyLlama-style decoder-only 模型，并研究
+attention 性能、batch composition 对确定性推理的影响，以及浮点归约顺序。
 
-本项目用于课程大作业，复现一个缩小版 TinyLlama-style decoder-only language
-model 预训练流程，并研究高性能 attention、batch size、batch composition 与浮点归约
-顺序对确定性推理的影响。SGLang、vLLM 和 DeepSeek 仅作为系统背景，基础实验完成前
-不引入 serving 框架。
+模型实现包含 RMSNorm、RoPE、GQA、SwiGLU 和 causal LM objective。30M 配置是主实验，
+60M 只做短 token 预算对照，100M 只做参数量和单步显存可行性检查。
 
-这里的 “TinyLlama-style” 指模型和训练组件采用 RMSNorm、RoPE、GQA、SwiGLU 与
-causal LM objective，并不表示复现 TinyLlama 的完整数据规模或训练结果。
-
-## 研究问题
-
-1. 30M/60M/100M 级小模型能否完整展示数据处理、训练、PPL 评估和生成流程？
-2. eager attention、PyTorch SDPA 与 FlashAttention-2 的 prefill、decode 和显存表现有何差异？
-3. 同一个 target prompt 位于不同 batch 时，logits 排名和 greedy 输出是否变化？
-4. 浮点加法非结合性和归约顺序如何产生差异？
-5. 固定归约树能否换取跨 block 设置一致的结果，其运行时间代价如何？
-
-## 项目结构
-
-```text
-configs/          模型与训练 JSON 配置
-data/             自包含的小型文本样例
-src/model/        TinyLlama-style 模型
-src/data/         byte tokenizer 与 causal dataset
-src/train/        训练、验证和 checkpoint
-src/infer/        文本生成
-src/bench/        attention 性能测试
-src/determinism/  batch composition 敏感性
-src/toy/          浮点归约与固定归约树
-scripts/          一键运行脚本
-results/          CSV、JSON 和 checkpoint 输出
-reports/          实验记录与报告提纲
-tests/            最小单元测试
-```
-
-## 环境安装
-
-推荐 Python 3.11 或 3.12。当前项目声明 Python 3.13 不受支持，因为 PyTorch 及
-可选 CUDA extension 的兼容性取决于具体发布版本。
+## Conda 环境
 
 ```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
+conda env create -f environment.yml
+conda activate nlp-project
 ```
 
-Apple Silicon 可运行 CPU/MPS 基础实验，但不能运行 CUDA FlashAttention-2。
-支持 CUDA 的 Linux 环境可按 `flash-attn` 对应版本要求安装：
+更新已有环境：
+
+```bash
+conda env update -n nlp-project -f environment.yml --prune
+conda activate nlp-project
+```
+
+`environment.yml` 默认安装 CUDA 12.1 版 PyTorch。驱动或 CUDA 环境不匹配时，应按
+[PyTorch 官方安装说明](https://pytorch.org/get-started/locally/)调整
+`pytorch-cuda` 版本。FlashAttention-2 是可选依赖：
 
 ```bash
 python -m pip install flash-attn --no-build-isolation
 ```
 
-若 `flash-attn`、CUDA 或兼容 dtype 不可用，benchmark 会写入
-`status=skipped` 和具体 `reason`，不会中断其他 backend。
+## 数据集
 
-## Experiment 1: TinyLlama-style Pretraining
+主训练数据是 `roneneldan/TinyStories`：
 
-默认 smoke 配置使用很小的模型验证 loss 下降链路：
+- 固定 `seed=42`；
+- 训练上限 5000 万 BPE token；
+- 官方 validation 上限 200 万 token；
+- 在训练文本上训练 8K SentencePiece BPE；
+- 原始缓存、tokenizer、`.npy` packed tokens 和统计写入
+  `data/processed/tinystories/`。
+
+准备数据：
 
 ```bash
-./scripts/train_tiny.sh
+./scripts/prepare_data.sh
 ```
 
-覆盖步数或设备：
+配置位于 `configs/data_tinystories.json`。`configs/data_fineweb_edu_optional.json`
+提供 FineWeb-Edu 后续扩展示例，本周不作为必做数据。WikiText-2 Raw 只用于域外 PPL，
+评估命令会在首次运行时下载并编码 test split。
+
+## Smoke Test
+
+byte tokenizer 和仓库内小文本只用于快速检查训练链路：
 
 ```bash
-python -m src.train.pretrain \
-  --config configs/train_tiny.json \
-  --max-steps 20 \
-  --device cpu
+./scripts/train_tiny.sh --max-steps 200
+python -m src.infer.generate \
+  --checkpoint results/smoke_run/best_checkpoint.pt \
+  --prompt "Language models"
 ```
 
-30M/60M/100M 配置位于：
+## 30M 主训练
+
+```bash
+./scripts/train_main.sh
+```
+
+默认配置：
+
+- sequence length 512；
+- micro batch 8，gradient accumulation 8；
+- 每步 32768 token；
+- 1526 steps，约 5000 万 token；
+- FP16、AdamW、`3e-4` learning rate、100 steps warmup；
+- 每 250 steps 验证并保存 checkpoint。
+
+断点恢复：
+
+```bash
+./scripts/train_main.sh --resume results/train_30m/checkpoint.pt
+```
+
+产物包括 `checkpoint.pt`、`best_checkpoint.pt`、`final_checkpoint.pt`、
+`training_metrics.csv`、`training_summary.json` 和 tokenizer 副本。
+
+如果 5000 万 token 无法在期限内完成，先覆盖为约 2000 万 token：
+
+```bash
+./scripts/train_main.sh --max-steps 611
+```
+
+60M 短训练配置为 `configs/train_60m_short.json`。
+
+## 实验
+
+完成主训练后运行：
+
+```bash
+./scripts/run_main_experiments.sh results/train_30m/best_checkpoint.pt
+```
+
+该脚本依次执行：
+
+1. 10 个固定 prompt 的 greedy 与 temperature sampling；
+2. WikiText-2 Raw 域外 PPL；
+3. eager、SDPA、FlashAttention-2 三轮 attention benchmark；
+4. 10 prompts、五种 composition、两种 backend 和两种精度的 batch sensitivity；
+5. 10 次重复的浮点归约和 fixed-tree 实验；
+6. 30M/60M/100M 参数及单步显存检查；
+7. 从 CSV 自动生成报告图表。
+
+FlashAttention-2、CUDA 或某种 dtype 不可用时，实验写入 `skipped/error` 和原因，
+不会伪造测量值。Attention benchmark 是算子级 microbenchmark，不代表完整 serving
+吞吐。
+
+单独运行：
+
+```bash
+python -m src.bench.attention_benchmark \
+  --batch-sizes 1,4,8 --seq-lens 128,256,512 \
+  --warmup 20 --iterations 100 --repeats 3
+python -m src.determinism.batch_sensitivity \
+  --checkpoint results/train_30m/best_checkpoint.pt
+python -m src.toy.reduction_order --repeats 10
+python -m src.toy.batch_invariant_reduction --repeats 10
+python -m src.analysis.plot_results
+```
+
+## 项目结构
 
 ```text
-configs/model_30m.json
-configs/model_60m.json
-configs/model_100m.json
+configs/          数据、模型和训练配置
+data/             smoke 文本及被忽略的本地数据缓存
+src/data/         Hugging Face 数据准备、tokenizer、packed dataset
+src/model/        decoder-only Transformer
+src/train/        训练、验证、恢复和 checkpoint
+src/infer/        单条及固定 prompts 生成
+src/eval/         WikiText 域外 PPL
+src/bench/        attention 与模型规模实验
+src/determinism/  batch composition 敏感性
+src/toy/          浮点归约实验
+src/analysis/     CSV/JSON 自动绘图
+reports/          任务书、实验记录和报告模板
+results/          被 Git 忽略的实验产物
 ```
 
-修改训练 JSON 的 `model_config` 即可切换。训练记录包含 training loss、
-validation loss、PPL、tokens/s，并保存可恢复 checkpoint。
+任务安排见 `reports/task_book.md`，报告模板见 `reports/final_report.md`。
 
-生成样例：
-
-```bash
-./scripts/generate.sh --max-new-tokens 64 --temperature 0
-```
-
-首版使用确定性的 UTF-8 byte tokenizer，目的是减少外部依赖并完整展示训练流程。
-它不适合追求模型质量；后续可增加 SentencePiece/BPE 实验。
-
-## Experiment 2: Attention Benchmark
-
-```bash
-./scripts/run_attention_benchmark.sh \
-  --batch-sizes 1,4,8 \
-  --seq-lens 128,512,1024 \
-  --dtype float16
-```
-
-测试 eager、SDPA 和 FlashAttention-2。`prefill` 为完整 causal attention；
-`decode` 为一个 query token 对已有 KV sequence 的 attention microbenchmark。
-它不包含完整模型、KV-cache 分配或调度开销，因此不能直接代表 serving 吞吐。
-
-输出字段包括 workload、backend、batch size、sequence length、latency、
-tokens/s、GPU peak memory、status 和 reason。
-
-## Experiment 3: Batch Size Sensitivity
-
-先训练 checkpoint，再运行：
-
-```bash
-./scripts/run_batch_sensitivity.sh \
-  --target "The capital of France is" \
-  --max-new-tokens 32
-```
-
-脚本构造五组 batch：
-
-```text
-A: target only
-B: target + 1 short distractor
-C: target + 7 short distractors
-D: target + 1 long distractor
-E: target + mixed-length distractors
-```
-
-记录 `max_abs_diff`、`mean_abs_diff`、top-1/top-5 是否变化、greedy 输出是否一致，
-以及首个分叉 token index。variable-length batch 使用 attention mask 推导 RoPE
-position ids，避免 padding 本身改变有效 token 的位置。
-
-## Experiment 4: Floating-Point Reduction
-
-```bash
-python -m src.toy.reduction_order \
-  --size 4096 \
-  --block-size 128
-```
-
-对 FP16、BF16 和 FP32 比较顺序、反向、分块、随机顺序与固定二叉树归约，并记录
-FP64 reference error 和运行时间。某个 dtype 在设备上不可用时会记录为 skipped。
-
-## Experiment 5: Toy Batch-Invariant Reduction
-
-```bash
-python -m src.toy.batch_invariant_reduction \
-  --block-sizes 16,32,64,128,256 \
-  --dtype float32
-```
-
-`block_dependent` 的算术分组随 block size 改变；`fixed_tree` 忽略 block size，
-始终执行同一归约树。该 toy experiment 只解释 Batch Invariance 的基本思想，
-不是高性能 kernel 实现。
-
-## 输出文件
-
-```text
-results/smoke_run/training_metrics.csv
-results/smoke_run/training_summary.json
-results/smoke_run/checkpoint.pt
-results/generation.json
-results/attention_benchmark.csv
-results/attention_benchmark.json
-results/batch_sensitivity.csv
-results/batch_sensitivity.json
-results/reduction_order.csv
-results/reduction_order.json
-results/batch_invariant_reduction.csv
-results/batch_invariant_reduction.json
-```
-
-CSV 用于后续画图，JSON 保存环境、prompt、token ids 和解释性 metadata。
-
-## 测试
+## 验证
 
 ```bash
 python -m pytest
 python -m compileall -q src tests
 ```
 
-## 当前完成情况
-
-- [x] 项目结构与 JSON 配置
-- [x] RMSNorm/RoPE/GQA/SwiGLU decoder-only model
-- [x] byte tokenizer、causal dataset、训练、验证、PPL、checkpoint
-- [x] greedy/sampling generation
-- [x] eager/SDPA/FlashAttention-2 benchmark 框架与缺失依赖降级
-- [x] 五种 batch composition 的 logits 与生成比较
-- [x] reduction-order 与 fixed-tree toy experiments
-- [ ] 在安装 PyTorch 的 Python 3.11/3.12 环境运行训练和测试
-- [ ] 在 NVIDIA GPU 上采集 FlashAttention-2 数据
-
-## TODO
-
-1. 增加 SentencePiece/BPE tokenizer 与更大的公开语料切片。
-2. 加入 KV cache，区分完整模型 prefill latency 与逐 token decode throughput。
-3. 固定软件栈后重复采样并报告均值、标准差和 warmup 策略。
-4. 增加 logits 差异随 layer/token position 的诊断。
-5. 基础实验跑通后，再评估 SGLang 或 vLLM serving 对比。
+当前实现不包含 KV cache、SGLang/vLLM、完整 100M 训练或通用模型质量评测。这些内容
+保留为后续工作。

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import math
+import shutil
 import time
 from contextlib import nullcontext
 from pathlib import Path
@@ -19,7 +21,7 @@ from src.common import (
     set_seed,
     synchronize,
 )
-from src.data import ByteTokenizer, CausalTextDataset
+from src.data import CausalTextDataset, PackedTokenDataset, load_tokenizer
 from src.model import ModelConfig, TinyLlama
 
 
@@ -29,6 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--device")
     parser.add_argument("--output-dir")
+    parser.add_argument("--resume")
     return parser.parse_args()
 
 
@@ -67,17 +70,28 @@ def evaluate(
 def save_checkpoint(
     model: TinyLlama,
     optimizer: torch.optim.Optimizer,
+    scaler: torch.amp.GradScaler,
     step: int,
+    tokens_seen: int,
     output_dir: Path,
+    filename: str,
+    train_config: dict[str, Any],
+    tokenizer_path: str | None,
+    best_validation_loss: float | None,
 ) -> None:
     torch.save(
         {
             "model_config": model.config.to_dict(),
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
+            "scaler": scaler.state_dict(),
             "step": step,
+            "tokens_seen": tokens_seen,
+            "train_config": train_config,
+            "tokenizer_path": tokenizer_path,
+            "best_validation_loss": best_validation_loss,
         },
-        output_dir / "checkpoint.pt",
+        output_dir / filename,
     )
 
 
@@ -89,10 +103,15 @@ def train(config: dict[str, Any]) -> None:
     device = resolve_device(config["device"])
     dtype = resolve_dtype(config["dtype"], device)
     set_seed(config["seed"])
-    tokenizer = ByteTokenizer()
+    tokenizer = load_tokenizer(config.get("tokenizer_path"))
     model_config = ModelConfig.from_json(config["model_config"])
-    train_dataset = CausalTextDataset(config["train_file"], tokenizer, config["seq_len"])
-    valid_dataset = CausalTextDataset(config["valid_file"], tokenizer, config["seq_len"])
+    model_config.vocab_size = tokenizer.vocab_size
+    if config.get("train_tokens"):
+        train_dataset = PackedTokenDataset(config["train_tokens"], config["seq_len"])
+        valid_dataset = PackedTokenDataset(config["validation_tokens"], config["seq_len"])
+    else:
+        train_dataset = CausalTextDataset(config["train_file"], tokenizer, config["seq_len"])
+        valid_dataset = CausalTextDataset(config["valid_file"], tokenizer, config["seq_len"])
     generator = torch.Generator().manual_seed(config["seed"])
     train_loader = DataLoader(
         train_dataset,
@@ -111,11 +130,37 @@ def train(config: dict[str, Any]) -> None:
     )
     use_scaler = device.type == "cuda" and dtype == torch.float16
     scaler = torch.amp.GradScaler("cuda", enabled=use_scaler)
-    metrics: list[dict[str, float | int]] = []
+    metrics: list[dict[str, Any]] = []
     train_iterator = infinite_batches(train_loader)
     model.train()
+    start_step = 0
+    tokens_seen = 0
+    best_validation_loss: float | None = None
+    resume_path = config.get("resume")
+    if resume_path:
+        checkpoint = torch.load(resume_path, map_location=device, weights_only=False)
+        model.load_state_dict(checkpoint["model"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        if checkpoint.get("scaler"):
+            scaler.load_state_dict(checkpoint["scaler"])
+        start_step = int(checkpoint["step"])
+        tokens_seen = int(checkpoint.get("tokens_seen", 0))
+        best_validation_loss = checkpoint.get("best_validation_loss")
+        metrics_path = output_dir / "training_metrics.csv"
+        if metrics_path.exists():
+            with metrics_path.open(encoding="utf-8") as handle:
+                metrics = list(csv.DictReader(handle))
 
-    for step in range(1, config["max_steps"] + 1):
+    tokenizer_checkpoint_path: str | None = None
+    if config.get("tokenizer_path"):
+        destination = output_dir / "tokenizer.model"
+        if Path(config["tokenizer_path"]).resolve() != destination.resolve():
+            shutil.copy2(config["tokenizer_path"], destination)
+        tokenizer_checkpoint_path = str(destination.resolve())
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+    training_started = time.perf_counter()
+    for step in range(start_step + 1, config["max_steps"] + 1):
         optimizer.zero_grad(set_to_none=True)
         step_loss = 0.0
         step_tokens = 0
@@ -141,6 +186,7 @@ def train(config: dict[str, Any]) -> None:
         scaler.update()
         synchronize(device)
         elapsed = time.perf_counter() - started
+        tokens_seen += step_tokens
         train_loss = step_loss / config["gradient_accumulation_steps"]
 
         should_evaluate = (
@@ -163,7 +209,38 @@ def train(config: dict[str, Any]) -> None:
                 )
                 row["validation_loss"] = validation_loss
                 row["perplexity"] = math.exp(min(validation_loss, 20.0))
-                save_checkpoint(model, optimizer, step, output_dir)
+                if best_validation_loss is None or validation_loss < best_validation_loss:
+                    best_validation_loss = validation_loss
+                    save_checkpoint(
+                        model,
+                        optimizer,
+                        scaler,
+                        step,
+                        tokens_seen,
+                        output_dir,
+                        "best_checkpoint.pt",
+                        config,
+                        tokenizer_checkpoint_path,
+                        best_validation_loss,
+                    )
+                save_checkpoint(
+                    model,
+                    optimizer,
+                    scaler,
+                    step,
+                    tokens_seen,
+                    output_dir,
+                    "checkpoint.pt",
+                    config,
+                    tokenizer_checkpoint_path,
+                    best_validation_loss,
+                )
+            row["tokens_seen"] = tokens_seen
+            row["peak_memory_mb"] = (
+                torch.cuda.max_memory_allocated(device) / 1024**2
+                if device.type == "cuda"
+                else 0.0
+            )
             metrics.append(row)
             save_csv(metrics, output_dir / "training_metrics.csv")
             print(
@@ -171,12 +248,30 @@ def train(config: dict[str, Any]) -> None:
                 f"tokens/s={row['tokens_per_second']:.1f}"
             )
 
-    save_checkpoint(model, optimizer, config["max_steps"], output_dir)
+    save_checkpoint(
+        model,
+        optimizer,
+        scaler,
+        config["max_steps"],
+        tokens_seen,
+        output_dir,
+        "final_checkpoint.pt",
+        config,
+        tokenizer_checkpoint_path,
+        best_validation_loss,
+    )
+    wall_time = time.perf_counter() - training_started
     summary = {
         "device": str(device),
         "dtype": str(dtype),
         "parameter_count": model.parameter_count(),
         "steps": config["max_steps"],
+        "tokens_seen": tokens_seen,
+        "wall_time_seconds": wall_time,
+        "peak_memory_mb": (
+            torch.cuda.max_memory_allocated(device) / 1024**2 if device.type == "cuda" else 0.0
+        ),
+        "best_validation_loss": best_validation_loss,
         "final_train_loss": metrics[-1]["train_loss"],
         "final_validation_loss": metrics[-1].get("validation_loss"),
         "final_perplexity": metrics[-1].get("perplexity"),
@@ -193,6 +288,8 @@ def main() -> None:
         config["device"] = args.device
     if args.output_dir is not None:
         config["output_dir"] = args.output_dir
+    if args.resume is not None:
+        config["resume"] = args.resume
     train(config)
 
 

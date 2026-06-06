@@ -28,8 +28,9 @@ def save_csv(rows: Iterable[dict[str, Any]], path: str | Path) -> None:
     if not rows:
         output.write_text("", encoding="utf-8")
         return
+    fieldnames = list(dict.fromkeys(key for row in rows for key in row))
     with output.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
 
@@ -69,4 +70,3 @@ def synchronize(device: torch.device) -> None:
         torch.cuda.synchronize(device)
     elif device.type == "mps":
         torch.mps.synchronize()
-

@@ -1,0 +1,17 @@
+{
+  "dataset_name": "HuggingFaceFW/fineweb-edu",
+  "dataset_config": "sample-10BT",
+  "train_split": "train",
+  "validation_split": "train",
+  "text_field": "text",
+  "streaming": true,
+  "shuffle": true,
+  "shuffle_buffer": 10000,
+  "seed": 42,
+  "vocab_size": 8000,
+  "max_train_documents": 1000000,
+  "max_validation_documents": 20000,
+  "train_token_budget": 100000000,
+  "validation_token_budget": 2000000,
+  "output_dir": "data/processed/fineweb_edu"
+}

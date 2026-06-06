@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import statistics
 import time
+from functools import partial
 from itertools import product
 
 import torch
@@ -24,6 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dtype", choices=["float16", "bfloat16", "float32"], default="float16")
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iterations", type=int, default=30)
+    parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--output", default="results/attention_benchmark.csv")
     return parser.parse_args()
@@ -101,7 +104,10 @@ def main() -> None:
                     rows.append(
                         {
                             **row_base,
+                            "repeat": "",
                             "latency_ms": "",
+                            "mean_latency_ms": "",
+                            "std_latency_ms": "",
                             "tokens_per_second": "",
                             "peak_memory_mb": "",
                             "status": "skipped",
@@ -109,37 +115,57 @@ def main() -> None:
                         }
                     )
                     continue
-                if device.type == "cuda":
-                    torch.cuda.reset_peak_memory_stats(device)
                 if backend == "eager":
-                    function = lambda: eager_attention(query, key, value, workload == "prefill")
+                    function = partial(
+                        eager_attention, query, key, value, workload == "prefill"
+                    )
                 elif backend == "sdpa":
-                    function = lambda: F.scaled_dot_product_attention(
-                        query, key, value, is_causal=workload == "prefill"
+                    function = partial(
+                        F.scaled_dot_product_attention,
+                        query,
+                        key,
+                        value,
+                        is_causal=workload == "prefill",
                     )
                 else:
                     q = query.transpose(1, 2)
                     k = key.transpose(1, 2)
                     v = value.transpose(1, 2)
-                    function = lambda: flash_function(q, k, v, causal=True)
+                    function = partial(flash_function, q, k, v, causal=True)
                 try:
-                    latency_ms = run_timed(function, args.warmup, args.iterations, device)
+                    latencies = []
+                    memories = []
+                    for repeat in range(1, args.repeats + 1):
+                        if device.type == "cuda":
+                            torch.cuda.reset_peak_memory_stats(device)
+                        latency_ms = run_timed(function, args.warmup, args.iterations, device)
+                        latencies.append(latency_ms)
+                        memories.append(peak_memory_mb(device) or 0.0)
+                    mean_latency = statistics.mean(latencies)
+                    std_latency = statistics.stdev(latencies) if len(latencies) > 1 else 0.0
                     processed_tokens = batch_size * (seq_len if workload == "prefill" else 1)
-                    rows.append(
-                        {
+                    for repeat, (latency_ms, memory_mb) in enumerate(
+                        zip(latencies, memories), start=1
+                    ):
+                        rows.append({
                             **row_base,
+                            "repeat": repeat,
                             "latency_ms": latency_ms,
+                            "mean_latency_ms": mean_latency,
+                            "std_latency_ms": std_latency,
                             "tokens_per_second": processed_tokens / (latency_ms / 1000.0),
-                            "peak_memory_mb": peak_memory_mb(device) or "",
+                            "peak_memory_mb": memory_mb,
                             "status": "ok",
                             "reason": "",
-                        }
-                    )
+                        })
                 except RuntimeError as error:
                     rows.append(
                         {
                             **row_base,
+                            "repeat": "",
                             "latency_ms": "",
+                            "mean_latency_ms": "",
+                            "std_latency_ms": "",
                             "tokens_per_second": "",
                             "peak_memory_mb": "",
                             "status": "error",

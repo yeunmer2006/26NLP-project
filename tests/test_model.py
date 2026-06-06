@@ -39,3 +39,10 @@ def test_padding_does_not_shift_target_positions() -> None:
     batched = model(batch, attention_mask=mask)["logits"][0, 2]
     torch.testing.assert_close(single, batched, rtol=1e-5, atol=1e-6)
 
+
+def test_vocab_size_can_be_overridden_from_tokenizer() -> None:
+    config = ModelConfig(vocab_size=8000, hidden_size=32, intermediate_size=64,
+                         num_hidden_layers=1, num_attention_heads=4,
+                         num_key_value_heads=2, max_position_embeddings=16)
+    model = TinyLlama(config)
+    assert model.embed_tokens.num_embeddings == 8000

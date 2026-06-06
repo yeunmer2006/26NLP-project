@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 
 from src.common import resolve_device, save_json, set_seed
-from src.data import ByteTokenizer
+from src.data import load_tokenizer
 from src.model import ModelConfig, TinyLlama
 
 
@@ -30,10 +30,22 @@ def load_model(checkpoint_path: str, device: torch.device) -> TinyLlama:
     return model.to(device).eval()
 
 
+def load_model_and_tokenizer(checkpoint_path: str, device: torch.device):
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    model = TinyLlama(ModelConfig(**checkpoint["model_config"]))
+    model.load_state_dict(checkpoint["model"])
+    tokenizer_path = checkpoint.get("tokenizer_path")
+    if tokenizer_path and not Path(tokenizer_path).exists():
+        local_tokenizer = Path(checkpoint_path).parent / "tokenizer.model"
+        tokenizer_path = str(local_tokenizer) if local_tokenizer.exists() else None
+    tokenizer = load_tokenizer(tokenizer_path)
+    return model.to(device).eval(), tokenizer
+
+
 @torch.inference_mode()
 def generate(
     model: TinyLlama,
-    tokenizer: ByteTokenizer,
+    tokenizer,
     prompt: str,
     max_new_tokens: int,
     temperature: float,
@@ -63,8 +75,7 @@ def main() -> None:
     args = parse_args()
     set_seed(args.seed)
     device = resolve_device(args.device)
-    tokenizer = ByteTokenizer()
-    model = load_model(args.checkpoint, device)
+    model, tokenizer = load_model_and_tokenizer(args.checkpoint, device)
     text, token_ids = generate(
         model,
         tokenizer,

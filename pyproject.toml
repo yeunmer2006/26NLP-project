@@ -8,7 +8,10 @@ version = "0.1.0"
 description = "Small decoder-only LM pretraining and deterministic inference experiments"
 requires-python = ">=3.10,<3.13"
 dependencies = [
+  "datasets>=3.0",
+  "matplotlib>=3.9",
   "numpy>=1.26",
+  "sentencepiece>=0.2",
   "torch>=2.3",
 ]
 

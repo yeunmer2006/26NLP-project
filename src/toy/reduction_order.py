@@ -15,6 +15,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--block-size", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--repeats", type=int, default=10)
     parser.add_argument("--output", default="results/reduction_order.csv")
     return parser.parse_args()
 
@@ -76,11 +77,12 @@ def main() -> None:
                 "fixed_tree": lambda: fixed_tree_sum(values),
             }
             for method, function in methods.items():
-                result, elapsed_ms = timed_sum(function, device)
-                rows.append(
-                    {
+                for repeat in range(1, args.repeats + 1):
+                    result, elapsed_ms = timed_sum(function, device)
+                    rows.append({
                         "dtype": str(dtype).removeprefix("torch."),
                         "method": method,
+                        "repeat": repeat,
                         "size": args.size,
                         "block_size": args.block_size if method == "blocked" else "",
                         "result": result,
@@ -89,13 +91,13 @@ def main() -> None:
                         "elapsed_ms": elapsed_ms,
                         "status": "ok",
                         "reason": "",
-                    }
-                )
+                    })
         except RuntimeError as error:
             rows.append(
                 {
                     "dtype": str(dtype).removeprefix("torch."),
                     "method": "all",
+                    "repeat": "",
                     "size": args.size,
                     "block_size": "",
                     "result": "",
