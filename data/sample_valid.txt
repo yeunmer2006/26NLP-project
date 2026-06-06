@@ -1,0 +1,4 @@
+A decoder-only Transformer predicts one next token at every sequence position.
+Small numerical differences may grow when autoregressive decoding changes a selected token.
+This validation corpus checks that evaluation loss and perplexity can be computed.
+

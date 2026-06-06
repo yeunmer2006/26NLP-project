@@ -1,0 +1,21 @@
+{
+  "train_file": "data/sample_train.txt",
+  "valid_file": "data/sample_valid.txt",
+  "model_config": "configs/model_smoke.json",
+  "output_dir": "results/smoke_run",
+  "seed": 42,
+  "seq_len": 128,
+  "batch_size": 8,
+  "gradient_accumulation_steps": 1,
+  "max_steps": 200,
+  "eval_interval": 25,
+  "eval_batches": 10,
+  "log_interval": 5,
+  "learning_rate": 0.0003,
+  "weight_decay": 0.1,
+  "grad_clip": 1.0,
+  "warmup_steps": 20,
+  "device": "auto",
+  "dtype": "float32"
+}
+

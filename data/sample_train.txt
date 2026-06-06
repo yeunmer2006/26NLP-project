@@ -1,0 +1,11 @@
+Language models predict the next token from the tokens that came before it.
+A small model is useful for checking a training pipeline quickly and clearly.
+Deterministic experiments require fixed seeds, fixed inputs, and careful measurement.
+Floating point addition is not associative, so reduction order can change the result.
+Attention lets each token combine information from earlier tokens in the sequence.
+The optimizer updates parameters to reduce causal language modeling loss.
+Validation loss and perplexity estimate performance on held-out text.
+Batch composition can select different kernels and different floating point reduction paths.
+This sample corpus is intentionally small. It tests mechanics rather than model quality.
+Reproducible research records configuration, software versions, metrics, and limitations.
+
