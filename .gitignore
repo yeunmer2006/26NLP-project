@@ -12,3 +12,5 @@ data/raw/
 results/*
 !results/.gitkeep
 !results/README.md
+
+tmp/
