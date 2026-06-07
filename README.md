@@ -66,11 +66,16 @@ python -m pip install flash-attn --no-build-isolation
 准备数据：
 
 ```bash
-./scripts/prepare_data.sh
+set -o pipefail
+./scripts/prepare_data.sh 2>&1 | tee results/prepare_data.log
 ```
 
+`tee` 会同时在终端显示输出并保存日志；`pipefail` 确保数据准备失败时整条命令返回
+非零状态。公开数据集可以匿名下载；Hugging Face 的未认证请求提示只是限速警告，
+需要更高限额时可先运行 `hf auth login`。
+
 配置位于 `configs/data_tinystories.json`。`configs/data_fineweb_edu_optional.json`
-提供 FineWeb-Edu 后续扩展示例，本周不作为必做数据。WikiText-2 Raw 只用于域外 PPL，
+提供 FineWeb-Edu 后续扩展示例。WikiText-2 Raw 只用于域外 PPL，
 评估命令会在首次运行时下载并编码 test split。
 
 ## Smoke Test
@@ -78,16 +83,25 @@ python -m pip install flash-attn --no-build-isolation
 byte tokenizer 和仓库内小文本只用于快速检查训练链路：
 
 ```bash
-./scripts/train_tiny.sh --max-steps 200
+./scripts/train_tiny.sh \
+  --max-steps 20 \
+  --output-dir results/smoke_check
 python -m src.infer.generate \
-  --checkpoint results/smoke_run/best_checkpoint.pt \
-  --prompt "Language models"
+  --checkpoint results/smoke_check/best_checkpoint.pt \
+  --prompt "Once upon a time" \
+  --max-new-tokens 32 \
+  --temperature 0 \
+  --output results/smoke_check/generation.json
 ```
+
+不传覆盖参数时，`configs/train_tiny.json` 的默认值仍是 200 steps，输出到
+`results/smoke_run/`。
 
 ## 30M 主训练
 
 ```bash
-./scripts/train_main.sh
+set -o pipefail
+./scripts/train_main.sh 2>&1 | tee results/train_30m_console.log
 ```
 
 默认配置：
@@ -102,7 +116,10 @@ python -m src.infer.generate \
 断点恢复：
 
 ```bash
-./scripts/train_main.sh --resume results/train_30m/checkpoint.pt
+set -o pipefail
+./scripts/train_main.sh \
+  --resume results/train_30m/checkpoint.pt \
+  2>&1 | tee -a results/train_30m_console.log
 ```
 
 产物包括 `checkpoint.pt`、`best_checkpoint.pt`、`final_checkpoint.pt`、
