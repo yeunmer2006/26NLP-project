@@ -138,7 +138,37 @@ set -o pipefail
 完成主训练后运行：
 
 ```bash
-./scripts/run_main_experiments.sh results/train_30m/best_checkpoint.pt
+set -o pipefail
+./scripts/run_main_experiments.sh \
+  results/train_30m/best_checkpoint.pt \
+  2>&1 | tee results/main_experiments.log
+```
+
+默认结果按类型写入 `results/main_experiments/`：
+
+```text
+results/main_experiments/
+├── environment.json
+├── generation/generation_samples.json
+├── evaluation/wikitext_perplexity.json
+├── benchmarks/attention_benchmark.csv
+├── benchmarks/attention_benchmark.json
+├── benchmarks/model_scale.json
+├── determinism/batch_sensitivity.csv
+├── determinism/batch_sensitivity.json
+├── toy/reduction_order.csv
+├── toy/reduction_order.json
+├── toy/batch_invariant_reduction.csv
+├── toy/batch_invariant_reduction.json
+└── figures/
+```
+
+第二个参数可以指定另一套实验输出目录，避免覆盖已有结果：
+
+```bash
+./scripts/run_main_experiments.sh \
+  results/train_30m/best_checkpoint.pt \
+  results/main_experiments_run2
 ```
 
 该脚本依次执行：
@@ -161,6 +191,22 @@ set -o pipefail
   [`batch_invariant_ops`](https://github.com/thinking-machines-lab/batch_invariant_ops)，
   在 vLLM 连续批处理中并发提交 1000 个 `temperature=0` 请求，对比默认算子与通过
   `torch.library` 替换后的批次不变算子。
+
+当前实现边界：
+
+| 层次 | 实现位置 | 当前状态 |
+|---|---|---|
+| batch size/composition 对 logits 和 greedy output 的影响 | `src/determinism/batch_sensitivity.py` | 已实现，使用仓库内 30M 模型的静态批处理 |
+| 不同浮点归约顺序产生数值漂移 | `src/toy/reduction_order.py` | 已实现，属于机制级 toy experiment |
+| 固定归约树跨 block size 保持相同结果 | `src/toy/batch_invariant_reduction.py` | 已实现，未替换模型中的 RMSNorm/Matmul |
+| Qwen3-8B 或 TinyLlama 1.1B 的 1000 次请求 | 无 | 未实现 |
+| vLLM continuous batching 复现 | 无 | 未实现 |
+| `torch.library` 替换 Matmul/RMSNorm | 无 | 未实现 |
+| 替换前后 bitwise identical rate 与 serving 性能对比 | 无 | 未实现 |
+
+因此，当前结果可以支持“batch composition 会造成 logits 数值漂移”和“固定归约顺序
+能够消除 toy reduction 的 block-size dependence”，但不能宣称已经在真实推理服务器
+中恢复端到端 Batch Invariance。
 
 FlashAttention-2、CUDA 或某种 dtype 不可用时，实验写入 `skipped/error` 和原因，
 不会伪造测量值。Attention benchmark 是算子级 microbenchmark，不代表完整 serving

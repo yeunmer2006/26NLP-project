@@ -15,10 +15,19 @@ def read_csv(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+def first_existing(root: Path, *relative_paths: str) -> Path:
+    for relative_path in relative_paths:
+        path = root / relative_path
+        if path.exists():
+            return path
+    return root / relative_paths[0]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate report figures from experiment CSVs.")
     parser.add_argument("--results-dir", default="results")
     parser.add_argument("--output-dir", default="results/figures")
+    parser.add_argument("--training-metrics")
     args = parser.parse_args()
     try:
         import matplotlib.pyplot as plt
@@ -30,7 +39,12 @@ def main() -> None:
     output.mkdir(parents=True, exist_ok=True)
     generated = []
 
-    training = read_csv(root / "train_30m" / "training_metrics.csv")
+    training_path = (
+        Path(args.training_metrics)
+        if args.training_metrics
+        else root / "train_30m" / "training_metrics.csv"
+    )
+    training = read_csv(training_path)
     if training:
         steps = [int(row["step"]) for row in training]
         fig, axes = plt.subplots(1, 2, figsize=(10, 4))
@@ -49,7 +63,10 @@ def main() -> None:
         plt.close(fig)
         generated.append(str(path))
 
-    attention = [row for row in read_csv(root / "attention_benchmark.csv")
+    attention_path = first_existing(
+        root, "benchmarks/attention_benchmark.csv", "attention_benchmark.csv"
+    )
+    attention = [row for row in read_csv(attention_path)
                  if row.get("status") == "ok"]
     if attention:
         groups: dict[str, list[tuple[int, float]]] = defaultdict(list)
@@ -71,7 +88,10 @@ def main() -> None:
         plt.close(fig)
         generated.append(str(path))
 
-    sensitivity = [row for row in read_csv(root / "batch_sensitivity.csv")
+    sensitivity_path = first_existing(
+        root, "determinism/batch_sensitivity.csv", "batch_sensitivity.csv"
+    )
+    sensitivity = [row for row in read_csv(sensitivity_path)
                    if row.get("status") == "ok"]
     if sensitivity:
         grouped: dict[str, list[float]] = defaultdict(list)
@@ -88,7 +108,10 @@ def main() -> None:
         plt.close(fig)
         generated.append(str(path))
 
-    reductions = [row for row in read_csv(root / "reduction_order.csv")
+    reductions_path = first_existing(
+        root, "toy/reduction_order.csv", "reduction_order.csv"
+    )
+    reductions = [row for row in read_csv(reductions_path)
                   if row.get("status") == "ok" and row.get("repeat") == "1"]
     if reductions:
         labels = [f"{row['dtype']}:{row['method']}" for row in reductions]
@@ -104,7 +127,12 @@ def main() -> None:
         plt.close(fig)
         generated.append(str(path))
 
-    invariant = read_csv(root / "batch_invariant_reduction.csv")
+    invariant_path = first_existing(
+        root,
+        "toy/batch_invariant_reduction.csv",
+        "batch_invariant_reduction.csv",
+    )
+    invariant = read_csv(invariant_path)
     if invariant:
         fig, axis = plt.subplots(figsize=(7, 4))
         for method in ("block_dependent", "fixed_tree"):
