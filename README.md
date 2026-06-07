@@ -135,27 +135,79 @@ set -o pipefail
 
 ## 实验
 
-完成主训练后运行：
+### FlashAttention-2 环境
+
+本机需要先安装 FlashAttention-2。它是可选依赖，不写入项目的强制依赖列表：
 
 ```bash
-set -o pipefail
-./scripts/run_main_experiments.sh \
-  results/train_30m/best_checkpoint.pt \
-  2>&1 | tee results/main_experiments.log
+conda activate nlp-project
+python -m pip install ninja packaging psutil
+MAX_JOBS=2 python -m pip install flash-attn --no-build-isolation
 ```
 
-默认结果按类型写入 `results/main_experiments/`：
+验证安装和 GPU：
+
+```bash
+python -c "import torch, flash_attn; print(torch.cuda.is_available(), flash_attn.__version__)"
+```
+
+当前本机已验证的版本是 PyTorch 2.5.1、CUDA runtime 12.1 和
+FlashAttention-2 2.8.3。源码编译内存紧张时将 `MAX_JOBS` 保持为 2。
+
+### 完整运行 v2
+
+完整主实验会包含生成、PPL、attention benchmark、RMSNorm benchmark、
+batch sensitivity、低 margin prompt 搜索、toy reduction、模型规模检查和绘图。
+
+```bash
+conda activate nlp-project
+set -o pipefail
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+export PYTHONUNBUFFERED=1
+export PYTHON_BIN="$(command -v python)"
+
+./scripts/run_main_experiments.sh \
+  results/train_30m/best_checkpoint.pt \
+  results/main_experiments_30m_v2 \
+  2>&1 | tee results/main_experiments_30m_v2.log
+```
+
+`PYTHON_BIN` 确保脚本使用当前 Conda 环境，而不是系统 Python。完整运行会覆盖同名
+CSV/JSON；需要保留另一轮结果时更换第二个参数：
+
+```bash
+./scripts/run_main_experiments.sh \
+  results/train_30m/best_checkpoint.pt \
+  results/main_experiments_30m_v3
+```
+
+观察运行状态：
+
+```bash
+tail -f results/main_experiments_30m_v2.log
+find results/main_experiments_30m_v2 -maxdepth 3 -type f | sort
+```
+
+默认 v2 结果结构：
 
 ```text
-results/main_experiments/
+results/main_experiments_30m_v2/
 ├── environment.json
 ├── generation/generation_samples.json
 ├── evaluation/wikitext_perplexity.json
 ├── benchmarks/attention_benchmark.csv
 ├── benchmarks/attention_benchmark.json
+├── benchmarks/rmsnorm_benchmark.csv
+├── benchmarks/rmsnorm_benchmark.json
 ├── benchmarks/model_scale.json
 ├── determinism/batch_sensitivity.csv
 ├── determinism/batch_sensitivity.json
+├── determinism/prompt_margin_candidates.csv
+├── determinism/prompt_margin_candidates.json
+├── determinism/divergence_search.csv
+├── determinism/divergence_search.json
+├── determinism/rmsnorm_invariance.csv
+├── determinism/rmsnorm_invariance.json
 ├── toy/reduction_order.csv
 ├── toy/reduction_order.json
 ├── toy/batch_invariant_reduction.csv
@@ -163,23 +215,97 @@ results/main_experiments/
 └── figures/
 ```
 
-第二个参数可以指定另一套实验输出目录，避免覆盖已有结果：
+### 分项运行和续跑
+
+以下命令适合在完整脚本中断后续跑。它们只更新对应文件。
+
+FlashAttention-2、SDPA 和 eager：
 
 ```bash
-./scripts/run_main_experiments.sh \
-  results/train_30m/best_checkpoint.pt \
-  results/main_experiments_run2
+python -m src.bench.attention_benchmark \
+  --batch-sizes 1,4,8 --seq-lens 128,256,512 \
+  --num-heads 8 --num-kv-heads 4 --head-dim 60 \
+  --warmup 20 --iterations 100 --repeats 3 \
+  --output results/main_experiments_30m_v2/benchmarks/attention_benchmark.csv
 ```
 
-该脚本依次执行：
+这里的 FlashAttention-2 路径直接调用 Dao-AILab 官方包的
+`flash_attn.flash_attn_func`，输入布局为 `[batch, seqlen, heads, head_dim]`，
+并直接传入较少的 KV heads 来走官方 GQA 路径，不在仓库内重写 CUDA kernel。
+该命令是前向推理 microbenchmark；论文性能图使用 A100、固定总 token 数以及
+forward+backward，因此本项目结果只能用于本机推理对比，不能声称逐项复现论文吞吐。
+
+native 与 fixed-tree RMSNorm 性能和算子逐比特一致性：
+
+```bash
+python -m src.bench.rmsnorm_benchmark \
+  --batch-sizes 1,4,8 --seq-lens 128,256,512 \
+  --hidden-size 480 --warmup 20 --iterations 100 --repeats 3 \
+  --output results/main_experiments_30m_v2/benchmarks/rmsnorm_benchmark.csv \
+  --invariance-output results/main_experiments_30m_v2/determinism/rmsnorm_invariance.csv
+```
+
+模型级 native/fixed-tree RMSNorm 对照：
+
+```bash
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+python -m src.determinism.batch_sensitivity \
+  --checkpoint results/train_30m/best_checkpoint.pt \
+  --norm-backends native,fixed_tree \
+  --output results/main_experiments_30m_v2/determinism/batch_sensitivity.csv
+```
+
+低 margin prompt 和 128-token greedy 分叉搜索：
+
+```bash
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+export PYTHONUNBUFFERED=1
+python -m src.determinism.divergence_search \
+  --checkpoint results/train_30m/best_checkpoint.pt \
+  --documents 2000 \
+  --prefix-lengths 8,16,32,64,128 \
+  --keep 100 \
+  --ranking-batch-size 32 \
+  --backends eager,sdpa \
+  --dtypes float32,float16 \
+  --norm-backends native \
+  --max-new-tokens 128 \
+  --candidates-output \
+    results/main_experiments_30m_v2/determinism/prompt_margin_candidates.csv \
+  --output results/main_experiments_30m_v2/determinism/divergence_search.csv \
+  2>&1 | tee results/divergence_search_v2.log
+```
+
+这是耗时最长的实验。它固定抽取 2000 篇 validation 文档，最多形成 10000 个前缀，
+保留 margin 最小的 100 个，并逐项验证五种 batch composition。找不到 greedy
+分叉也是有效负结果，不应缩减搜索预算后宣称“没有分叉”。
+
+其他实验和重新绘图：
+
+```bash
+python -m src.toy.reduction_order \
+  --repeats 10 \
+  --output results/main_experiments_30m_v2/toy/reduction_order.csv
+python -m src.toy.batch_invariant_reduction \
+  --repeats 10 \
+  --output results/main_experiments_30m_v2/toy/batch_invariant_reduction.csv
+python -m src.bench.model_scale \
+  --output results/main_experiments_30m_v2/benchmarks/model_scale.json
+python -m src.analysis.plot_results \
+  --results-dir results/main_experiments_30m_v2 \
+  --training-metrics results/train_30m/training_metrics.csv \
+  --output-dir results/main_experiments_30m_v2/figures
+```
+
+完整脚本依次执行：
 
 1. 10 个固定 prompt 的 greedy 与 temperature sampling；
 2. WikiText-2 Raw 域外 PPL；
 3. eager、SDPA、FlashAttention-2 三轮 attention benchmark；
-4. 10 prompts、五种 composition、两种 backend 和两种精度的 batch sensitivity；
-5. 10 次重复的浮点归约和 fixed-tree 实验；
-6. 30M/60M/100M 参数及单步显存检查；
-7. 从 CSV 自动生成报告图表。
+4. native/fixed-tree RMSNorm benchmark 和算子一致性；
+5. 两种 RMSNorm 的模型级 batch sensitivity；
+6. 低 margin prompt 排名和 greedy 分叉搜索；
+7. 浮点归约、模型规模检查和自动绘图。
 
 核心对照分三层：
 
@@ -196,13 +322,15 @@ results/main_experiments/
 
 | 层次 | 实现位置 | 当前状态 |
 |---|---|---|
-| batch size/composition 对 logits 和 greedy output 的影响 | `src/determinism/batch_sensitivity.py` | 已实现，使用仓库内 30M 模型的静态批处理 |
+| batch size/composition 对 logits 和 greedy output 的影响 | `src/determinism/batch_sensitivity.py` | 已实现，支持 native/fixed-tree RMSNorm 对照 |
+| 低 margin prompt 与 greedy 分叉搜索 | `src/determinism/divergence_search.py` | 已完成，2000 cases 中找到 56 个 greedy 分叉 |
+| 模型级 fixed-tree RMSNorm | `src/model/transformer.py` | 已实现，固定 hidden 维归约顺序 |
+| RMSNorm 性能与算子一致性 | `src/bench/rmsnorm_benchmark.py` | 已实现 |
 | 不同浮点归约顺序产生数值漂移 | `src/toy/reduction_order.py` | 已实现，属于机制级 toy experiment |
-| 固定归约树跨 block size 保持相同结果 | `src/toy/batch_invariant_reduction.py` | 已实现，未替换模型中的 RMSNorm/Matmul |
+| 固定归约树跨 block size 保持相同结果 | `src/toy/batch_invariant_reduction.py` | 已实现 |
 | Qwen3-8B 或 TinyLlama 1.1B 的 1000 次请求 | 无 | 未实现 |
 | vLLM continuous batching 复现 | 无 | 未实现 |
-| `torch.library` 替换 Matmul/RMSNorm | 无 | 未实现 |
-| 替换前后 bitwise identical rate 与 serving 性能对比 | 无 | 未实现 |
+| batch-invariant Matmul/Linear | 无 | 未实现 |
 
 因此，当前结果可以支持“batch composition 会造成 logits 数值漂移”和“固定归约顺序
 能够消除 toy reduction 的 block-size dependence”，但不能宣称已经在真实推理服务器
@@ -215,19 +343,6 @@ FlashAttention-2、CUDA 或某种 dtype 不可用时，实验写入 `skipped/err
 以下数字只能作为外部基线，不能预填为本项目结论：Thinking Machines Lab 的公开
 示例在 1000 次并发生成中从 18 个不同输出降到 1 个；确定性模式的性能损失必须在
 本机报告 latency、tokens/s 和相对变化，不能预设为 20%。
-
-单独运行：
-
-```bash
-python -m src.bench.attention_benchmark \
-  --batch-sizes 1,4,8 --seq-lens 128,256,512 \
-  --warmup 20 --iterations 100 --repeats 3
-python -m src.determinism.batch_sensitivity \
-  --checkpoint results/train_30m/best_checkpoint.pt
-python -m src.toy.reduction_order --repeats 10
-python -m src.toy.batch_invariant_reduction --repeats 10
-python -m src.analysis.plot_results
-```
 
 ## 项目结构
 
@@ -256,8 +371,8 @@ python -m pytest
 python -m compileall -q src tests
 ```
 
-当前实现不包含 KV cache、SGLang/vLLM、完整 100M 训练或通用模型质量评测。这些内容
-保留为后续工作。
+当前实现包含实验用增量 KV cache，但不包含 SGLang/vLLM serving、paged KV cache、
+完整 100M 训练或通用模型质量评测。这些内容保留为后续工作。
 
 ## 参考资料
 

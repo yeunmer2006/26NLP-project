@@ -8,17 +8,18 @@ TinyLlama-style decoder-only Transformer。模型包含 RMSNorm、RoPE、GQA、S
 TinyStories 的 5000 万 BPE token 上完成 1526 步训练，最终验证损失为 1.8850，
 验证困惑度为 6.5866。
 
-性能实验完成了 eager attention 与 PyTorch SDPA 的算子级对比。SDPA 在已测 shape
-上的 prefill 平均加速为 9.20 倍，decode 平均加速为 3.98 倍。但当前环境未成功安装
-`flash-attn`，因此 FlashAttention-2 结果全部被标记为 `skipped`，不能据此声称已经
-完成 FlashAttention-2 加速评估。
+性能实验已完成 eager attention、PyTorch SDPA 与 Dao-AILab 官方
+FlashAttention-2 2.8.3 的算子级对比。正式测试使用主模型 shape：8 个 query heads、
+4 个 KV heads、head dimension 60。在 9 个 prefill shape 上，FlashAttention-2
+相对 eager 平均加速 5.11 倍，相对 SDPA 平均加速 1.17 倍；在 decode 上，
+FlashAttention-2 相对 eager 平均加速 1.39 倍，与 SDPA 基本持平。
 
-确定性实验在 10 个 prompt、5 种 batch composition、2 种 attention backend 和
-2 种精度下得到 200 组结果，其中 132 组出现非零 logits 漂移，最大绝对差为
-0.0078125；没有发生 top-1 或 32-token greedy 输出分叉。toy reduction 实验进一步
-表明，依赖 block size 的归约得到 4 种结果，而固定归约树只得到 1 种结果。该结果
-说明固定算术顺序可以消除 toy 场景中的 batch/block dependence，但尚未替换真实模型
-或推理服务器中的 RMSNorm、Matmul 等算子。
+确定性实验分两层：固定 10 个 prompt 的 batch sensitivity 得到 400 组结果，其中
+263 组出现非零 logits 漂移，但没有 greedy 输出分叉；进一步的低 margin 搜索从
+8155 个候选中保留 100 个，并测试 2000 个 batch composition case，发现 56 个
+`temperature=0` greedy 输出分叉。toy reduction 实验表明，依赖 block size 的归约得到
+4 种结果，而固定归约树只得到 1 种结果。模型级 fixed-tree RMSNorm 已实现并测试，
+但尚未替换 Matmul/Linear，因此不能宣称整个模型已经 batch invariant。
 
 ## 1. 研究目标与范围
 
@@ -31,7 +32,7 @@ TinyStories 的 5000 万 BPE token 上完成 1526 步训练，最终验证损失
 
 本项目的训练对象是 TinyLlama-style 30M 级模型，不是 TinyLlama 1.1B 的完整预训练
 复现。vLLM continuous batching、Qwen3-8B 的 1000 次并发请求和系统级算子替换属于
-后续扩展，不纳入本初版报告的完成标准。
+后续扩展，不纳入当前报告的完成标准。
 
 ## 2. 实验环境
 
@@ -45,11 +46,10 @@ TinyStories 的 5000 万 BPE token 上完成 1526 步训练，最终验证损失
 | cuDNN | 9.1 |
 | 训练精度 | FP16 |
 | 随机种子 | 42 |
-| FlashAttention-2 | 不可用，`flash_attn` 导入失败 |
+| FlashAttention-2 | 2.8.3，官方 `flash_attn_func` 已通过 GPU 验证 |
 
-实验环境记录见
-`results/main_experiments_30m/environment.json`。该文件在工作区存在未提交改动时生成，
-因此其中的 Git 状态只用于复现实验环境，不代表当前最终提交状态。
+最终环境记录见 `results/main_experiments_30m_v2/environment.json`。该文件生成时
+工作区存在未提交修改，因此 Git 状态只用于说明运行环境，不代表最终提交状态。
 
 ## 3. 数据与 Tokenizer
 
@@ -87,7 +87,7 @@ token。
 正常收敛。固定 prompt 的 greedy generation 已能生成结构基本完整的 TinyStories
 风格短故事，因此可以认定“小语言模型训练”主线已经完成。
 
-![Training curves](../results/main_experiments_30m/figures/training.png)
+![Training curves](../results/main_experiments_30m_v2/figures/training.png)
 
 域外 WikiText-2 test perplexity 为 875.76。该值明显高于 TinyStories validation
 perplexity，符合“小模型只在合成儿童故事语料上训练、跨域泛化有限”的预期，不能用
@@ -99,58 +99,126 @@ TinyStories 域内指标替代通用语言能力评价。
 1/4/8、sequence length 128/256/512，并分别测量 full causal prefill 与单 query
 decode。每个 shape 预热 20 次、计时 100 次并重复 3 轮。
 
-### 5.1 已完成结果
+### 5.1 论文与官方代码依据
 
-SDPA 相对 eager 的结果如下：
+FlashAttention-2 论文将标准 attention 定义为精确计算，而不是 attention
+近似；核心改进是减少非矩阵乘 FLOPs、沿 sequence length 在多个 thread blocks
+之间并行，以及调整 thread block 内 warp 的工作划分。论文在 A100 上报告其达到
+理论峰值的 50%-73%，并在 GPT 风格模型训练中达到最高 225 TFLOPs/s [2]。
 
-| Workload | 加速比范围 | 9 个 shape 的平均加速 |
+本项目没有重新实现论文中的 CUDA/CUTLASS kernel，而是直接调用 Dao-AILab 官方
+`flash-attn` 2.8.3 包 [3]。官方接口规定：
+
+- `flash_attn_func` 计算 `softmax(QK^T * scale)V`，默认
+  `scale = 1 / sqrt(head_dim)`；
+- Q/K/V 布局分别为 `[batch, seqlen, heads, head_dim]`；
+- K/V heads 可以少于 Q heads，从而直接支持 MQA/GQA，且 Q heads 必须能被 KV
+  heads 整除；
+- 当 query length 与 key length 不同时，causal mask 采用右下对齐；完全被 mask
+  的行输出为零；
+- FP16/BF16 和不超过 256 的 head dimension 属于官方 CUDA 支持范围 [3][4]。
+
+对应到本项目，正式 shape 应为 8 个 Q heads、4 个 KV heads、`head_dim=60`。
+代码中的 SDPA/eager reference 已按同一右下对齐 causal 语义实现，并增加了
+GQA、decode 和全 mask 行测试。
+
+### 5.2 正式结果
+
+`results/main_experiments_30m_v2/benchmarks/attention_benchmark.csv` 包含正式 GQA
+运行。所有 162 行均为 `ok`：3 个 backend × 2 个 workload × 3 个 batch size ×
+3 个 sequence length × 3 次重复。
+
+| Workload | SDPA vs eager 平均加速 | FA2 vs eager 平均加速 | FA2 vs SDPA |
+|---|---:|---:|---:|
+| Prefill | 4.09x | 5.11x | 平均 1.17x，范围 0.87x - 1.50x |
+| Decode | 1.45x | 1.39x | 平均 0.99x，范围 0.74x - 1.21x |
+
+最大 shape `batch=8, seq_len=512` 中，prefill 的 FA2 相对 eager 加速 16.63 倍，
+相对 SDPA 加速 1.50 倍；decode 的 FA2 相对 eager 加速 1.44 倍，相对 SDPA 加速
+1.21 倍。FA2 相对 SDPA 的最大绝对误差为 `9.765625e-4`，最大平均绝对误差为
+`8.82e-6`。
+
+显存方面，prefill 的平均算子增量峰值显存为：
+
+| Backend | Prefill 平均峰值显存 | Prefill 最大峰值显存 |
 |---|---:|---:|
-| Prefill | 5.49x - 16.80x | 9.20x |
-| Decode | 2.19x - 5.33x | 3.98x |
+| eager | 40.48 MB | 168.00 MB |
+| SDPA | 7.60 MB | 24.13 MB |
+| FlashAttention-2 | 3.83 MB | 12.13 MB |
 
-在 batch=8、sequence length=512 的 prefill 中，eager 平均延迟为 2.7952 ms，
-SDPA 为 0.1663 ms，对应 16.80 倍加速。该结果证明项目的 attention benchmark
-链路有效，也证明 fused SDPA 相对显式 materialize attention matrix 的 eager 实现
-具有明显优势。
+结果说明，在本机 RTX 4060 Laptop GPU 和项目 GQA shape 下，FlashAttention-2
+对 prefill 有稳定收益；decode shape 较小，FA2 与 SDPA 接近，优势不稳定。不能把
+论文在 A100、较长序列和 forward+backward 设置下的结果直接预设为本机结论。
 
-![Attention latency](../results/main_experiments_30m/figures/attention_latency.png)
+![Attention latency](../results/main_experiments_30m_v2/figures/attention_latency.png)
 
-### 5.2 尚未完成部分
+### 5.3 与论文复现的边界
 
-当前 `flash_attn_available=false`，所有 FlashAttention-2 行均为 `skipped`。因此
-项目目前完成的是“eager 与 SDPA 加速评估”，尚未完成题目中明确要求的
-“FlashAttention-2 加速效果评估”。主线下一步必须先安装与 PyTorch/CUDA 匹配的
-`flash-attn`，然后重新运行 benchmark，并报告它相对 eager 和 SDPA 的 latency、
-throughput、显存和误差。
-
-此外，本实验是 attention 算子 microbenchmark，不包含完整模型前向、KV cache、
-tokenizer 或 serving scheduler 开销。
+本实验是前向推理 microbenchmark，不是论文的 A100 forward+backward benchmark。
+它也不包含 QKV projection、完整模型、真实 paged KV cache、tokenizer 或 serving
+scheduler 开销。因此报告可以说“调用并验证了论文作者的官方 FA2 实现”，不能说
+“逐行复现了论文 CUDA kernel”或“复现了论文中的训练吞吐”。
 
 ## 6. Batch Size/Composition 敏感性
 
-`src/determinism/batch_sensitivity.py` 将同一个目标 prompt 分别放入 batch size
+`src/determinism/batch_sensitivity.py` 将 10 个固定 prompt 分别放入 batch size
 1、2、4、8 的不同组合中，并比较目标位置 logits、top-5 token 和 32-token greedy
-generation。实验覆盖 eager/SDPA 与 FP32/FP16。
+generation。实验覆盖 eager/SDPA、FP32/FP16 和 native/fixed-tree RMSNorm。
 
 | 指标 | 结果 |
 |---|---:|
-| 成功实验数 | 200 |
-| 非零 logits 差异 | 132 |
+| 成功实验数 | 400 |
+| 非零 logits 差异 | 263 |
 | 最大绝对 logits 差异 | 0.0078125 |
 | top-1 改变 | 0 |
 | top-5 排序改变 | 1 |
 | greedy 输出分叉 | 0 |
 
-FP32 的最大差异为 `9.5367e-06`，FP16 的最大差异为 `0.0078125`，说明低精度会
-放大 batch composition 引起的数值漂移。但本次 prompt 没有处在足够接近的 token
+FP32 的最大差异为 `1.1444e-5`，FP16 的最大差异为 `0.0078125`，说明低精度会
+放大 batch composition 引起的数值漂移。fixed-tree RMSNorm 与 native RMSNorm 在
+该实验中的最大 logits 漂移相同，说明当前漂移主要还来自 attention/linear 等其他
+算子和后端策略，而不是 RMSNorm 单点。但本次固定 prompt 没有处在足够接近的 token
 决策边界上，因此漂移没有改变 argmax，也没有产生 greedy 输出分叉。
 
-![Batch sensitivity](../results/main_experiments_30m/figures/batch_sensitivity.png)
+![Batch sensitivity](../results/main_experiments_30m_v2/figures/batch_sensitivity.png)
 
 这一结果支持的准确结论是：“改变 batch composition 可以改变相同 prompt 的
-logits，且 FP16 漂移更大。”它不支持“本实验已经复现 temperature=0 输出不同”，
-因为当前 200 组实验的输出全部一致。后续若要复现输出分叉，应扩大 prompt 搜索范围、
-生成长度和重复次数，并寻找 top-1/top-2 margin 很小的决策点。
+logits，且 FP16 漂移更大。”固定 prompt 未产生 greedy 分叉，因此需要专门搜索
+低 margin prompt。
+
+### 6.1 低 Margin Prompt 搜索
+
+`src/determinism/divergence_search.py` 从 TinyStories validation 中抽取 2000 篇文档，
+按 prefix length 8/16/32/64/128 形成 8155 个候选。脚本用 FP16 SDPA 排序，保留
+top-1/top-2 margin 最小的 100 个 prompt，再对 eager/SDPA、FP32/FP16 和 5 种
+batch composition 生成 128 个 token。
+
+| 指标 | 结果 |
+|---|---:|
+| 候选 prompt 总数 | 8,155 |
+| 保留低 margin prompt | 100 |
+| 测试 case | 2,000 |
+| 非零 logits 差异 | 1,598 |
+| top-1 改变 | 27 |
+| top-5 改变 | 31 |
+| greedy 输出分叉 | 56 |
+| 最大绝对 logits 差异 | 0.00830078125 |
+
+分叉全部发生在 FP16：
+
+| Backend / dtype | 测试 case | Greedy 分叉 | Top-1 改变 |
+|---|---:|---:|---:|
+| eager / FP32 | 500 | 0 | 0 |
+| eager / FP16 | 500 | 30 | 17 |
+| SDPA / FP32 | 500 | 0 | 0 |
+| SDPA / FP16 | 500 | 26 | 10 |
+
+第一个分叉案例是 candidate rank 2，prompt 为
+`John and Lucy were playing in the backyard...`，baseline margin 为 0。它在
+`eager/FP16/B_one_short` 下第 76 个生成 token 开始分叉。另一个 SDPA/FP16 案例在
+candidate rank 44 的 `E_mixed_lengths` composition 中第 0 个生成 token 即分叉，并且
+top-1/top-5 均改变。这证明 `temperature=0` 只固定 argmax 规则，不能保证不同
+batch composition 下输出逐比特或逐 token 相同。
 
 ## 7. 归约顺序与 Batch Invariance
 
@@ -169,9 +237,10 @@ reference 得到不同误差，fixed-tree 的本次绝对误差为 0.0199。FP16
 结果说明，只要固定归约树和算术执行顺序，就能在该 toy 场景中恢复 bitwise identical
 结果。这构成了对 Batch Invariance “尝试解决”的机制级验证。
 
-但当前计时不能作为真实性能 trade-off：block-dependent 版本由 Python 循环实现，
-fixed-tree 版本使用张量操作，两者实现层级不等价。报告不能据此得出固定归约更快，
-也不能预设约 20% 的性能损失。
+模型级 RMSNorm 对照中，native 和 fixed-tree RMSNorm 在 18 个单算子 invariance case
+中均保持 bitwise equal。性能上，fixed-tree RMSNorm 平均延迟为 native 的 2.13 倍
+（范围 1.87x - 2.28x）。这说明固定归约顺序确实有性能代价；但目前只替换了
+RMSNorm，还没有替换 Linear/Matmul，因此不能宣称模型端已经完全 batch invariant。
 
 ## 8. 当前完成度
 
@@ -179,60 +248,91 @@ fixed-tree 版本使用张量操作，两者实现层级不等价。报告不能
 |---|---|---|
 | TinyLlama-style 小模型实现 | 已完成 | 架构、训练、验证、checkpoint 和生成链路完整 |
 | 30M 级主训练 | 已完成 | 5000 万 token、1526 steps 全部完成 |
-| eager/SDPA attention 对比 | 已完成 | 有 9 个 shape、3 次重复的实测结果 |
-| FlashAttention-2 对比 | 未完成 | 环境中 `flash-attn` 不可用 |
-| Batch composition 数值漂移研究 | 已完成 | 200 组结果证明 logits 会漂移 |
-| temperature=0 输出分叉复现 | 未完成 | 本次 top-1 和 greedy 输出均未改变 |
+| eager/SDPA/FlashAttention-2 对比 | 已完成 | 9 个 shape、3 次重复、主模型 GQA shape |
+| Batch composition 数值漂移研究 | 已完成 | 400 组固定 prompt 和 2000 组低 margin 搜索 |
+| temperature=0 输出分叉复现 | 已完成 | 低 margin 搜索发现 56 个 greedy 分叉 |
 | Batch Invariance 机制级解决 | 已完成 | fixed-tree toy experiment 跨 block size 一致 |
-| 模型级 Batch Invariance 解决 | 未完成 | 尚未替换 RMSNorm/Matmul 或模型 forward |
+| 模型级 Batch Invariance 解决 | 部分完成 | fixed-tree RMSNorm 已测，Linear/Matmul 未替换 |
 
 因此，项目不是“加速和 Batch Invariance 都没做”。更准确的判断是：
 
 - 小语言模型训练已经完成；
-- 加速实验框架和 SDPA 对比已经完成，但 FlashAttention-2 本身尚未测到；
-- Batch Invariance 的数值漂移研究和 toy 解决方案已经完成；
-- 端到端输出分叉与模型级解决方案尚未完成。
+- 官方 FlashAttention-2 已在主模型 GQA shape 上完成三轮 benchmark；
+- Batch Invariance 的数值漂移研究、低 margin 输出分叉和 toy 解决方案已经完成；
+- 模型级解决方案只推进到 RMSNorm，Linear/Matmul 和 serving 系统仍是后续工作。
 
-## 9. 主线收尾计划
+## 9. 后续工作
 
-初版课程报告要形成闭环，仍需完成以下三项：
+当前课程项目主线已经闭环。继续扩展时，应优先做三件事：
 
-1. 安装并验证 `flash-attn`，重新运行 attention benchmark，补齐
-   FlashAttention-2 与 eager/SDPA 的实测对比。
-2. 为 batch sensitivity 增加 top-1/top-2 margin 搜索和更多 prompt，至少找到一个
-   batch composition 导致 greedy token 或生成分叉的可复现案例；若仍未找到，应将
-   “只观测到 logits 漂移”作为负结果如实报告。
-3. 将固定计算顺序推进到模型级最小原型，例如实现 batch-invariant RMSNorm 或
-   Linear reduction，对同一模型重新测量 logits 差异、一致率和性能。无需先接入
-   vLLM，也无需做 8B 模型。
-
-vLLM continuous batching、1000 次并发请求、Qwen3-8B、On-policy RL 和 DeepSeek
-工程实践均作为后续扩展，主线完成前暂不投入。
+1. **实现 batch-invariant Linear/Matmul。** 当前 fixed-tree 只覆盖 RMSNorm，无法消除
+   attention 和 MLP 中矩阵乘带来的 batch dependence。
+2. **接入真实 serving 场景。** 用 vLLM 或自定义 continuous batching 复现动态批处理，
+   对比静态 batch 与 paged KV cache 下的输出唯一性。
+3. **扩大模型与硬件。** 在 TinyLlama 1.1B 或 Qwen3-8B 上验证输出分叉和性能代价，
+   并与 A100/H100 等数据中心 GPU 上的 FlashAttention-2 表现区分讨论。
 
 ## 10. 局限性
 
 实验仅使用单张消费级 GPU、一个 34M 参数模型和 TinyStories 合成语料。attention
 benchmark 不等同于完整 serving 性能；静态 batch 不等同于 continuous batching；
-当前模型没有 KV cache；toy fixed-tree 也不等同于真实 CUDA kernel。结果对 GPU、
-PyTorch、CUDA、dtype 和 kernel 版本敏感，不能直接外推到 1.1B 或 8B 模型。
+当前模型只有实验用增量 KV cache，不是 paged KV cache；toy fixed-tree 也不等同于
+完整 batch-invariant CUDA kernel。结果对 GPU、PyTorch、CUDA、dtype 和 kernel
+版本敏感，不能直接外推到 A100、TinyLlama 1.1B 或 8B 模型。
 
 ## 11. 结论
 
 本项目已经完成 TinyLlama-style 小语言模型从数据准备、tokenizer、预训练、验证到
-生成的完整流程，并取得验证困惑度 6.5866。SDPA microbenchmark 显示其相对 eager
-具有显著性能优势，但由于 `flash-attn` 缺失，FlashAttention-2 主线仍需补测。
+生成的完整流程，并取得验证困惑度 6.5866。Attention 实验已经调用 Dao-AILab 官方
+FlashAttention-2 2.8.3，并在主模型 GQA shape 上完成三轮 benchmark。FA2 对 prefill
+有明确收益，平均比 eager 快 5.11 倍、比 SDPA 快 1.17 倍；decode 中 FA2 与 SDPA
+总体接近。
 
-Batch sensitivity 实验确认 batch size/composition 会造成 logits 数值漂移，FP16
-漂移大于 FP32；本次尚未出现 greedy 输出分叉。fixed-tree toy experiment证明固定
-归约顺序可以恢复跨 block size 的 bitwise consistency，但模型级算子替换仍待完成。
-因此当前成果可以作为初版报告，最终版需要补齐 FlashAttention-2 和模型级
-Batch Invariance 两项关键证据。
+Batch sensitivity 和 low-margin search 共同证明 batch size/composition 会造成 logits
+数值漂移，并且在低 margin 决策点可以让 `temperature=0` greedy generation 发生分叉。
+本次 2000 个低 margin case 中发现 56 个输出分叉，全部发生在 FP16。fixed-tree toy
+experiment 证明固定归约顺序可以恢复跨 block size 的 bitwise consistency；模型级
+fixed-tree RMSNorm 已验证但代价约为 2.13 倍延迟，且还不能覆盖 Linear/Matmul。
+
+## 12. PPT 讲解提纲
+
+建议按 8 页组织：
+
+1. **问题与范围**：30M TinyLlama-style 训练、attention 加速、batch invariance；
+   强调不是复现 TinyLlama 1.1B 的完整训练。
+2. **模型与训练**：展示 RMSNorm、RoPE、GQA、SwiGLU 和训练曲线，给出
+   34.26M 参数、5000 万 tokens、validation PPL 6.5866。
+3. **FA2 论文原理**：用三句话讲“减少非 matmul FLOPs、跨 thread blocks 并行、
+   warp 工作重分配”，引用论文 [2]。
+4. **我如何对齐官方代码**：展示官方 `flash_attn_func` 的 QKV 布局、GQA 和 causal
+   mask 规则，再指向本项目 benchmark 与测试 [3][4]。
+5. **性能结果**：展示 FA2 prefill 平均 5.11x vs eager、1.17x vs SDPA，以及 decode
+   中接近 SDPA；强调这是本机 RTX 4060 前向 microbenchmark。
+6. **确定性现象**：展示固定 prompt 只有 logits 漂移，再展示低 margin 搜索找到
+   56 个 greedy 分叉。
+7. **修复尝试**：展示 fixed-tree toy 与模型级 RMSNorm 对照，明确已解决和未解决的
+   边界。
+8. **结论与下一步**：主线已闭环；下一步是 Linear/Matmul、serving 和更大模型扩展。
+
+讲 FA2 时可以直接使用以下表述：
+
+> 我没有自行仿写论文 CUDA kernel，而是调用作者官方 2.8.3 实现，并对输入布局、
+> GQA head 映射、缩放和不等长序列 causal mask 逐项建立 reference test。正式结果显示
+> FA2 在本机 prefill 上平均快于 SDPA，但 decode 优势不稳定；这说明本机实测不能照搬
+> 论文的 A100 训练吞吐。
 
 ## 参考资料
 
-1. TinyLlama: https://github.com/jzhang38/TinyLlama
-2. FlashAttention-2: https://arxiv.org/abs/2307.08691
-3. Thinking Machines Lab, *Defeating Nondeterminism in LLM Inference*:
+1. Zhang et al., TinyLlama official repository:
+   https://github.com/jzhang38/TinyLlama
+2. Tri Dao, *FlashAttention-2: Faster Attention with Better Parallelism and Work
+   Partitioning*, ICLR 2024:
+   https://proceedings.iclr.cc/paper_files/paper/2024/file/98ed250b203d1ac6b24bbcf263e3d4a7-Paper-Conference.pdf
+3. Dao-AILab, official FlashAttention repository, tag `v2.8.3`:
+   https://github.com/Dao-AILab/flash-attention/tree/v2.8.3
+4. Dao-AILab, `flash_attn_interface.py`, tag `v2.8.3`:
+   https://github.com/Dao-AILab/flash-attention/blob/v2.8.3/flash_attn/flash_attn_interface.py
+5. Thinking Machines Lab, *Defeating Nondeterminism in LLM Inference*:
    https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/
-4. Batch Invariant Ops:
+6. Thinking Machines Lab, Batch Invariant Ops:
    https://github.com/thinking-machines-lab/batch_invariant_ops

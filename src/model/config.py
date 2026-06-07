@@ -18,6 +18,7 @@ class ModelConfig:
     rms_norm_eps: float = 1e-5
     attention_dropout: float = 0.0
     attention_backend: str = "sdpa"
+    rms_norm_backend: str = "native"
     tie_word_embeddings: bool = True
 
     def __post_init__(self) -> None:
@@ -29,6 +30,8 @@ class ModelConfig:
             raise ValueError("attention head dimension must be even for RoPE")
         if self.attention_backend not in {"eager", "sdpa"}:
             raise ValueError("attention_backend must be 'eager' or 'sdpa'")
+        if self.rms_norm_backend not in {"native", "fixed_tree"}:
+            raise ValueError("rms_norm_backend must be 'native' or 'fixed_tree'")
 
     @classmethod
     def from_json(cls, path: str | Path) -> "ModelConfig":

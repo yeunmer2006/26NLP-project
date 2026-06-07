@@ -1,6 +1,8 @@
+import dataclasses
+
 import torch
 
-from src.model import ModelConfig, TinyLlama
+from src.model import ModelConfig, RMSNorm, TinyLlama
 
 
 def test_model_forward_and_loss() -> None:
@@ -46,3 +48,56 @@ def test_vocab_size_can_be_overridden_from_tokenizer() -> None:
                          num_key_value_heads=2, max_position_embeddings=16)
     model = TinyLlama(config)
     assert model.embed_tokens.num_embeddings == 8000
+
+
+def test_old_checkpoint_config_defaults_to_native_rmsnorm() -> None:
+    fields = {
+        field.name: field.default
+        for field in dataclasses.fields(ModelConfig)
+        if field.name != "rms_norm_backend"
+    }
+    config = ModelConfig(**fields)
+    assert config.rms_norm_backend == "native"
+
+
+def test_fixed_tree_rmsnorm_is_close_to_native() -> None:
+    torch.manual_seed(0)
+    values = torch.randn(2, 3, 480, dtype=torch.float32)
+    native = RMSNorm(480, 1e-5, "native")
+    fixed = RMSNorm(480, 1e-5, "fixed_tree")
+    fixed.load_state_dict(native.state_dict())
+    torch.testing.assert_close(
+        fixed(values), native(values), rtol=1e-5, atol=1e-6
+    )
+
+
+def test_fixed_tree_rmsnorm_is_batch_invariant() -> None:
+    torch.manual_seed(0)
+    norm = RMSNorm(480, 1e-5, "fixed_tree")
+    target = torch.randn(1, 1, 480)
+    mixed = torch.cat((target, torch.randn(7, 1, 480)), dim=0)
+    assert torch.equal(norm(target)[0, 0], norm(mixed)[0, 0])
+
+
+def test_kv_cache_matches_full_forward() -> None:
+    torch.manual_seed(0)
+    config = ModelConfig(
+        hidden_size=32,
+        intermediate_size=64,
+        num_hidden_layers=1,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        max_position_embeddings=16,
+        attention_backend="eager",
+    )
+    model = TinyLlama(config).eval()
+    prefix = torch.tensor([[1, 10, 11]])
+    next_token = torch.tensor([[12]])
+    full = model(torch.cat((prefix, next_token), dim=1))["logits"][:, -1]
+    cached = model(prefix, use_cache=True)
+    incremental = model(
+        next_token,
+        past_key_values=cached["past_key_values"],
+        use_cache=True,
+    )["logits"][:, -1]
+    torch.testing.assert_close(incremental, full, rtol=1e-5, atol=1e-6)

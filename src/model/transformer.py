@@ -9,15 +9,30 @@ import torch.nn.functional as F
 from .config import ModelConfig
 
 
+def fixed_tree_sum_last_dim(values: torch.Tensor) -> torch.Tensor:
+    width = values.shape[-1]
+    padded_width = 1 << (width - 1).bit_length()
+    if padded_width != width:
+        values = F.pad(values, (0, padded_width - width))
+    while values.shape[-1] > 1:
+        values = values[..., 0::2] + values[..., 1::2]
+    return values
+
+
 class RMSNorm(nn.Module):
-    def __init__(self, hidden_size: int, eps: float) -> None:
+    def __init__(self, hidden_size: int, eps: float, backend: str = "native") -> None:
         super().__init__()
         self.weight = nn.Parameter(torch.ones(hidden_size))
         self.eps = eps
+        self.backend = backend
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         input_dtype = hidden_states.dtype
-        variance = hidden_states.float().pow(2).mean(dim=-1, keepdim=True)
+        squared = hidden_states.float().pow(2)
+        if self.backend == "fixed_tree":
+            variance = fixed_tree_sum_last_dim(squared) / hidden_states.shape[-1]
+        else:
+            variance = squared.mean(dim=-1, keepdim=True)
         normalized = hidden_states.float() * torch.rsqrt(variance + self.eps)
         return self.weight * normalized.to(input_dtype)
 
@@ -81,12 +96,15 @@ class CausalSelfAttention(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
         position_ids: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+        past_key_value: tuple[torch.Tensor, torch.Tensor] | None = None,
+        use_cache: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         batch_size, seq_len, _ = hidden_states.shape
+        past_len = 0 if past_key_value is None else past_key_value[0].shape[-2]
         if position_ids is None:
-            position_ids = torch.arange(seq_len, device=hidden_states.device)[None, :].expand(
-                batch_size, -1
-            )
+            position_ids = torch.arange(
+                past_len, past_len + seq_len, device=hidden_states.device
+            )[None, :].expand(batch_size, -1)
         query = self.q_proj(hidden_states).view(
             batch_size, seq_len, self.num_heads, self.head_dim
         )
@@ -102,14 +120,20 @@ class CausalSelfAttention(nn.Module):
         query, key = self.rope(query, key, position_ids)
         key = repeat_kv(key, self.kv_repeats)
         value = repeat_kv(value, self.kv_repeats)
+        if past_key_value is not None:
+            key = torch.cat((past_key_value[0], key), dim=-2)
+            value = torch.cat((past_key_value[1], value), dim=-2)
 
         if self.backend == "sdpa":
-            output = self._sdpa(query, key, value, attention_mask)
+            output = self._sdpa(query, key, value, attention_mask, past_len)
         else:
-            output = self._eager(query, key, value, attention_mask)
+            output = self._eager(query, key, value, attention_mask, past_len)
 
         output = output.transpose(1, 2).contiguous().view(batch_size, seq_len, -1)
-        return self.o_proj(output)
+        output = self.o_proj(output)
+        if use_cache:
+            return output, (key, value)
+        return output
 
     def _sdpa(
         self,
@@ -117,15 +141,22 @@ class CausalSelfAttention(nn.Module):
         key: torch.Tensor,
         value: torch.Tensor,
         attention_mask: torch.Tensor | None,
+        past_len: int,
     ) -> torch.Tensor:
         dropout_p = self.dropout if self.training else 0.0
-        if attention_mask is None or bool(attention_mask.all()):
+        if past_len == 0 and (attention_mask is None or bool(attention_mask.all())):
             return F.scaled_dot_product_attention(
                 query, key, value, dropout_p=dropout_p, is_causal=True
             )
-        seq_len = query.shape[-2]
-        causal = torch.ones(seq_len, seq_len, dtype=torch.bool, device=query.device).tril()
-        allowed = causal[None, None, :, :] & attention_mask[:, None, None, :].bool()
+        query_len, key_len = query.shape[-2], key.shape[-2]
+        query_positions = torch.arange(
+            past_len, past_len + query_len, device=query.device
+        )
+        key_positions = torch.arange(key_len, device=query.device)
+        allowed = key_positions[None, :] <= query_positions[:, None]
+        allowed = allowed[None, None, :, :]
+        if attention_mask is not None:
+            allowed = allowed & attention_mask[:, None, None, :].bool()
         return F.scaled_dot_product_attention(
             query, key, value, attn_mask=allowed, dropout_p=dropout_p
         )
@@ -136,11 +167,15 @@ class CausalSelfAttention(nn.Module):
         key: torch.Tensor,
         value: torch.Tensor,
         attention_mask: torch.Tensor | None,
+        past_len: int,
     ) -> torch.Tensor:
         scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(self.head_dim)
-        seq_len = query.shape[-2]
-        allowed = torch.ones(seq_len, seq_len, dtype=torch.bool, device=query.device).tril()
-        allowed = allowed[None, None, :, :]
+        query_len, key_len = query.shape[-2], key.shape[-2]
+        query_positions = torch.arange(
+            past_len, past_len + query_len, device=query.device
+        )
+        key_positions = torch.arange(key_len, device=query.device)
+        allowed = (key_positions[None, :] <= query_positions[:, None])[None, None, :, :]
         if attention_mask is not None:
             allowed = allowed & attention_mask[:, None, None, :].bool()
         scores = scores.masked_fill(~allowed, torch.finfo(scores.dtype).min)
@@ -163,9 +198,13 @@ class SwiGLU(nn.Module):
 class TransformerBlock(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
-        self.input_norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
+        self.input_norm = RMSNorm(
+            config.hidden_size, config.rms_norm_eps, config.rms_norm_backend
+        )
         self.attention = CausalSelfAttention(config)
-        self.post_attention_norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
+        self.post_attention_norm = RMSNorm(
+            config.hidden_size, config.rms_norm_eps, config.rms_norm_backend
+        )
         self.mlp = SwiGLU(config)
 
     def forward(
@@ -173,11 +212,24 @@ class TransformerBlock(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
         position_ids: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        hidden_states = hidden_states + self.attention(
-            self.input_norm(hidden_states), attention_mask, position_ids
+        past_key_value: tuple[torch.Tensor, torch.Tensor] | None = None,
+        use_cache: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        attention_output = self.attention(
+            self.input_norm(hidden_states),
+            attention_mask,
+            position_ids,
+            past_key_value,
+            use_cache,
         )
-        return hidden_states + self.mlp(self.post_attention_norm(hidden_states))
+        present = None
+        if use_cache:
+            attention_output, present = attention_output
+        hidden_states = hidden_states + attention_output
+        hidden_states = hidden_states + self.mlp(self.post_attention_norm(hidden_states))
+        if use_cache:
+            return hidden_states, present
+        return hidden_states
 
 
 class TinyLlama(nn.Module):
@@ -188,7 +240,9 @@ class TinyLlama(nn.Module):
         self.layers = nn.ModuleList(
             [TransformerBlock(config) for _ in range(config.num_hidden_layers)]
         )
-        self.norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
+        self.norm = RMSNorm(
+            config.hidden_size, config.rms_norm_eps, config.rms_norm_backend
+        )
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.apply(self._initialize_weights)
         if config.tie_word_embeddings:
@@ -204,16 +258,29 @@ class TinyLlama(nn.Module):
         input_ids: torch.Tensor,
         labels: torch.Tensor | None = None,
         attention_mask: torch.Tensor | None = None,
+        past_key_values: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
+        use_cache: bool = False,
     ) -> dict[str, torch.Tensor | None]:
-        if input_ids.shape[1] > self.config.max_position_embeddings:
+        past_len = 0 if past_key_values is None else past_key_values[0][0].shape[-2]
+        if input_ids.shape[1] + past_len > self.config.max_position_embeddings:
             raise ValueError("sequence length exceeds max_position_embeddings")
         position_ids = None
         if attention_mask is not None:
             position_ids = attention_mask.long().cumsum(dim=-1) - 1
             position_ids = position_ids.clamp_min(0)
+            position_ids = position_ids[:, -input_ids.shape[1]:]
         hidden_states = self.embed_tokens(input_ids)
-        for layer in self.layers:
-            hidden_states = layer(hidden_states, attention_mask, position_ids)
+        presents = []
+        for layer_index, layer in enumerate(self.layers):
+            past = None if past_key_values is None else past_key_values[layer_index]
+            layer_output = layer(
+                hidden_states, attention_mask, position_ids, past, use_cache
+            )
+            if use_cache:
+                hidden_states, present = layer_output
+                presents.append(present)
+            else:
+                hidden_states = layer_output
         logits = self.lm_head(self.norm(hidden_states))
         loss = None
         if labels is not None:
@@ -222,7 +289,11 @@ class TinyLlama(nn.Module):
                 labels.reshape(-1),
                 ignore_index=-100,
             )
-        return {"loss": loss, "logits": logits}
+        return {
+            "loss": loss,
+            "logits": logits,
+            "past_key_values": presents if use_cache else None,
+        }
 
     def parameter_count(self) -> int:
         return sum(parameter.numel() for parameter in self.parameters())

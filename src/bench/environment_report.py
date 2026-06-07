@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import platform
 import subprocess
+import sys
 
 import torch
 
@@ -33,7 +34,7 @@ def main() -> None:
             "cudnn_version": torch.backends.cudnn.version(),
             "gpu": torch.cuda.get_device_name(0) if cuda_available else None,
             "flash_attn": command_output(
-                ["python", "-c", "import flash_attn; print(flash_attn.__version__)"]
+                [sys.executable, "-c", "import flash_attn; print(flash_attn.__version__)"]
             ),
         },
         args.output,

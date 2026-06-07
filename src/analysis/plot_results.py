@@ -88,6 +88,40 @@ def main() -> None:
         plt.close(fig)
         generated.append(str(path))
 
+    rmsnorm_path = first_existing(
+        root, "benchmarks/rmsnorm_benchmark.csv", "rmsnorm_benchmark.csv"
+    )
+    rmsnorm = [
+        row for row in read_csv(rmsnorm_path)
+        if row.get("status") == "ok" and row.get("batch_size") == "1"
+    ]
+    if rmsnorm:
+        groups = defaultdict(list)
+        for row in rmsnorm:
+            groups[row["backend"]].append(
+                (int(row["seq_len"]), float(row["mean_latency_ms"]))
+            )
+        fig, axis = plt.subplots(figsize=(6, 4))
+        for backend, values in groups.items():
+            unique = sorted(set(values))
+            axis.plot(
+                [x for x, _ in unique],
+                [y for _, y in unique],
+                marker="o",
+                label=backend,
+            )
+        axis.set(
+            xlabel="sequence length",
+            ylabel="latency (ms)",
+            title="RMSNorm latency, batch=1",
+        )
+        axis.legend()
+        fig.tight_layout()
+        path = output / "rmsnorm_latency.png"
+        fig.savefig(path, dpi=160)
+        plt.close(fig)
+        generated.append(str(path))
+
     sensitivity_path = first_existing(
         root, "determinism/batch_sensitivity.csv", "batch_sensitivity.csv"
     )
@@ -96,12 +130,16 @@ def main() -> None:
     if sensitivity:
         grouped: dict[str, list[float]] = defaultdict(list)
         for row in sensitivity:
-            grouped[row["composition"]].append(float(row["max_abs_diff"]))
+            label = row.get("norm_backend", "native")
+            grouped[label].append(float(row["max_abs_diff"]))
         labels = list(grouped)
         fig, axis = plt.subplots(figsize=(8, 4))
         axis.bar(labels, [max(grouped[label]) for label in labels])
-        axis.tick_params(axis="x", rotation=20)
-        axis.set(ylabel="max absolute logits difference", title="Batch sensitivity")
+        axis.set(
+            xlabel="RMSNorm backend",
+            ylabel="max absolute logits difference",
+            title="Batch sensitivity",
+        )
         fig.tight_layout()
         path = output / "batch_sensitivity.png"
         fig.savefig(path, dpi=160)
