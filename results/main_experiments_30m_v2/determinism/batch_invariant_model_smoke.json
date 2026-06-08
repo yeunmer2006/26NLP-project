@@ -1,0 +1,101 @@
+{
+  "checkpoint": "results/train_30m/best_checkpoint.pt",
+  "device": "cuda",
+  "prompts": [
+    "Once upon a time"
+  ],
+  "cases": {
+    "fixed_tree/fixed_tile/flash_attn_2_bi/float32/Once upon a time/A_target_only": {
+      "prompts": [
+        "Once upon a time"
+      ],
+      "top5_token_ids": [
+        7907,
+        145,
+        65,
+        6,
+        188
+      ],
+      "target_generated_token_ids": [
+        7907
+      ],
+      "target_generated_text": ","
+    },
+    "fixed_tree/fixed_tile/flash_attn_2_bi/float32/Once upon a time/B_one_short": {
+      "prompts": [
+        "Once upon a time",
+        "The sky is blue."
+      ],
+      "top5_token_ids": [
+        7907,
+        145,
+        65,
+        6,
+        188
+      ],
+      "target_generated_token_ids": [
+        7907
+      ],
+      "target_generated_text": ","
+    },
+    "fixed_tree/fixed_tile/flash_attn_2_bi/float32/Once upon a time/C_seven_short": {
+      "prompts": [
+        "Once upon a time",
+        "The sky is blue.",
+        "Two plus two is four.",
+        "A short unrelated sentence.",
+        "Paris is in France.",
+        "Water freezes at zero degrees.",
+        "A model maps tokens to logits.",
+        "This prompt is deliberately brief."
+      ],
+      "top5_token_ids": [
+        7907,
+        145,
+        65,
+        6,
+        188
+      ],
+      "target_generated_token_ids": [
+        7907
+      ],
+      "target_generated_text": ","
+    },
+    "fixed_tree/fixed_tile/flash_attn_2_bi/float32/Once upon a time/D_one_long": {
+      "prompts": [
+        "Once upon a time",
+        "This is a longer distractor prompt used to alter the shape and composition of a batch. It contains several clauses and repeated context without sharing the target meaning. This is a longer distractor prompt used to alter the shape and composition of a batch. It contains several clauses and repeated context without sharing the target meaning. This is a longer distractor prompt used to alter the shape and composition of a batch. It contains several clauses and repeated context without sharing the target meaning. This is a longer distractor prompt used to alter the shape and composition of a batch. It contains several clauses and repeated context without sharing the target meaning. This is a longer distractor prompt used to alter the shape and composition of a batch. It contains several clauses and repeated context without sharing the target meaning. This is a longer distractor prompt used to alter the shape and composition of a batch. It contains several clauses and repeated context without sharing the target meaning."
+      ],
+      "top5_token_ids": [
+        7907,
+        145,
+        65,
+        6,
+        188
+      ],
+      "target_generated_token_ids": [
+        7907
+      ],
+      "target_generated_text": ","
+    },
+    "fixed_tree/fixed_tile/flash_attn_2_bi/float32/Once upon a time/E_mixed_lengths": {
+      "prompts": [
+        "Once upon a time",
+        "Two plus two is four.",
+        "This is a longer distractor prompt used to alter the shape and composition of a batch. It contains several clauses and repeated context without sharing the target meaning. This is a longer distractor prompt used to alter the shape and composition of a batch. It contains several clauses and repeated context without sharing the target meaning. This is a longer distractor prompt used to alter the shape and composition of a batch. It contains several clauses and repeated context without sharing the target meaning. This is a longer distractor prompt used to alter the shape and composition of a batch. It contains several clauses and repeated context without sharing the target meaning. This is a longer distractor prompt used to alter the shape and composition of a batch. It contains several clauses and repeated context without sharing the target meaning. This is a longer distractor prompt used to alter the shape and composition of a batch. It contains several clauses and repeated context without sharing the target meaning.",
+        "A short unrelated sentence."
+      ],
+      "top5_token_ids": [
+        7907,
+        145,
+        65,
+        6,
+        188
+      ],
+      "target_generated_token_ids": [
+        7907
+      ],
+      "target_generated_text": ","
+    }
+  }
+}

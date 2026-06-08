@@ -38,6 +38,16 @@ def main() -> None:
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
     generated = []
+    artifacts = []
+
+    def record_figure(path: Path, sources: list[Path]) -> None:
+        generated.append(str(path))
+        artifacts.append(
+            {
+                "figure": str(path),
+                "sources": [str(source) for source in sources],
+            }
+        )
 
     training_path = (
         Path(args.training_metrics)
@@ -61,7 +71,7 @@ def main() -> None:
         path = output / "training.png"
         fig.savefig(path, dpi=160)
         plt.close(fig)
-        generated.append(str(path))
+        record_figure(path, [training_path])
 
     attention_path = first_existing(
         root, "benchmarks/attention_benchmark.csv", "attention_benchmark.csv"
@@ -86,14 +96,14 @@ def main() -> None:
         path = output / "attention_latency.png"
         fig.savefig(path, dpi=160)
         plt.close(fig)
-        generated.append(str(path))
+        record_figure(path, [attention_path])
 
     attention_invariance_path = first_existing(
         root, "determinism/attention_invariance.csv", "attention_invariance.csv"
     )
     attention_invariance = [
         row for row in read_csv(attention_invariance_path)
-        if row.get("status") == "ok" and row.get("workload") == "prefill"
+        if row.get("status") == "ok"
     ]
     if attention_invariance:
         grouped = defaultdict(list)
@@ -121,7 +131,7 @@ def main() -> None:
         axes[1].set(
             xlabel="attention backend",
             ylabel="max absolute difference",
-            title="Attention drift, prefill",
+            title="Attention drift, prefill + decode",
         )
         for axis in axes:
             axis.tick_params(axis="x", rotation=20)
@@ -129,7 +139,7 @@ def main() -> None:
         path = output / "attention_invariance.png"
         fig.savefig(path, dpi=160)
         plt.close(fig)
-        generated.append(str(path))
+        record_figure(path, [attention_invariance_path])
 
     rmsnorm_path = first_existing(
         root, "benchmarks/rmsnorm_benchmark.csv", "rmsnorm_benchmark.csv"
@@ -163,7 +173,82 @@ def main() -> None:
         path = output / "rmsnorm_latency.png"
         fig.savefig(path, dpi=160)
         plt.close(fig)
-        generated.append(str(path))
+        record_figure(path, [rmsnorm_path])
+
+    matmul_path = first_existing(
+        root, "benchmarks/matmul_benchmark.csv", "matmul_benchmark.csv"
+    )
+    matmul = [
+        row for row in read_csv(matmul_path)
+        if row.get("status") == "ok" and row.get("batch_size") == "1"
+    ]
+    if matmul:
+        shapes = list(dict.fromkeys(row["shape"] for row in matmul))
+        backends = list(dict.fromkeys(row["backend"] for row in matmul))
+        fig, axes = plt.subplots(1, len(shapes), figsize=(5 * len(shapes), 4), squeeze=False)
+        for axis, shape in zip(axes[0], shapes):
+            for backend in backends:
+                values = [
+                    (int(row["seq_len"]), float(row["mean_latency_ms"]))
+                    for row in matmul
+                    if row["shape"] == shape and row["backend"] == backend
+                ]
+                unique = sorted(set(values))
+                axis.plot(
+                    [x for x, _ in unique],
+                    [y for _, y in unique],
+                    marker="o",
+                    label=backend,
+                )
+            axis.set(
+                xlabel="sequence length",
+                ylabel="latency (ms)",
+                title=f"Matmul latency, {shape}, batch=1",
+            )
+            axis.legend()
+        fig.tight_layout()
+        path = output / "matmul_latency.png"
+        fig.savefig(path, dpi=160)
+        plt.close(fig)
+        record_figure(path, [matmul_path])
+
+    matmul_invariance_path = first_existing(
+        root, "determinism/matmul_invariance.csv", "matmul_invariance.csv"
+    )
+    matmul_invariance = [
+        row for row in read_csv(matmul_invariance_path)
+        if row.get("status") == "ok"
+    ]
+    if matmul_invariance:
+        grouped = defaultdict(list)
+        equality = defaultdict(list)
+        for row in matmul_invariance:
+            grouped[row["backend"]].append(float(row["max_abs_diff"]))
+            equality[row["backend"]].append(row.get("bitwise_equal") == "True")
+        labels = list(grouped)
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+        axes[0].bar(
+            labels,
+            [sum(equality[label]) / len(equality[label]) * 100.0 for label in labels],
+        )
+        axes[0].set(
+            xlabel="matmul backend",
+            ylabel="bitwise equal cases (%)",
+            title="Matmul invariance pass rate",
+            ylim=(0, 105),
+        )
+        axes[1].bar(labels, [max(max(grouped[label]), 1e-12) for label in labels])
+        axes[1].set_yscale("log")
+        axes[1].set(
+            xlabel="matmul backend",
+            ylabel="max absolute difference",
+            title="Matmul drift",
+        )
+        fig.tight_layout()
+        path = output / "matmul_invariance.png"
+        fig.savefig(path, dpi=160)
+        plt.close(fig)
+        record_figure(path, [matmul_invariance_path])
 
     sensitivity_path = first_existing(
         root, "determinism/batch_sensitivity.csv", "batch_sensitivity.csv"
@@ -173,7 +258,12 @@ def main() -> None:
     if sensitivity:
         grouped: dict[str, list[float]] = defaultdict(list)
         for row in sensitivity:
-            label = row.get("norm_backend", "native")
+            label = "/".join(
+                [
+                    row.get("norm_backend", "native"),
+                    row.get("linear_backend", "native"),
+                ]
+            )
             grouped[label].append(float(row["max_abs_diff"]))
         labels = list(grouped)
         fig, axis = plt.subplots(figsize=(8, 4))
@@ -187,7 +277,7 @@ def main() -> None:
         path = output / "batch_sensitivity.png"
         fig.savefig(path, dpi=160)
         plt.close(fig)
-        generated.append(str(path))
+        record_figure(path, [sensitivity_path])
 
     reductions_path = first_existing(
         root, "toy/reduction_order.csv", "reduction_order.csv"
@@ -206,7 +296,7 @@ def main() -> None:
         path = output / "reduction_error.png"
         fig.savefig(path, dpi=160)
         plt.close(fig)
-        generated.append(str(path))
+        record_figure(path, [reductions_path])
 
     invariant_path = first_existing(
         root,
@@ -230,9 +320,15 @@ def main() -> None:
         path = output / "fixed_tree_runtime.png"
         fig.savefig(path, dpi=160)
         plt.close(fig)
-        generated.append(str(path))
+        record_figure(path, [invariant_path])
 
-    save_json({"generated": generated}, output / "manifest.json")
+    save_json(
+        {
+            "generated": generated,
+            "artifacts": artifacts,
+        },
+        output / "manifest.json",
+    )
     print(f"generated {len(generated)} figures in {output}")
 
 

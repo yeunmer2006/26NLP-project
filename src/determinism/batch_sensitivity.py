@@ -51,6 +51,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--attention-fixed-split-size", type=int, default=64)
     parser.add_argument("--dtypes", default="float32,float16")
     parser.add_argument("--norm-backends", default="native,fixed_tree")
+    parser.add_argument("--linear-backends", default="native")
+    parser.add_argument("--linear-tile-m", type=int, default=16)
+    parser.add_argument("--linear-tile-n", type=int, default=64)
+    parser.add_argument("--linear-k-block-size", type=int, default=64)
     parser.add_argument("--max-new-tokens", type=int, default=32)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--seed", type=int, default=42)
@@ -179,75 +183,82 @@ def main() -> None:
     rows = []
     details = {}
     for norm_backend in args.norm_backends.split(","):
-        for backend in args.backends.split(","):
-            model, tokenizer = load_model_and_tokenizer(args.checkpoint, device)
-            model.config.attention_backend = backend
-            model.config.attention_fixed_split_size = args.attention_fixed_split_size
-            model.config.rms_norm_backend = norm_backend
-            model.norm.backend = norm_backend
-            for layer in model.layers:
-                layer.attention.backend = backend
-                layer.attention.fixed_split_size = args.attention_fixed_split_size
-                layer.input_norm.backend = norm_backend
-                layer.post_attention_norm.backend = norm_backend
-            for dtype in args.dtypes.split(","):
-                if device.type == "cpu" and dtype == "float16":
-                    rows.append({
-                        "prompt": "", "backend": backend, "dtype": dtype,
-                        "norm_backend": norm_backend, "composition": "",
-                        "status": "skipped",
-                        "reason": "float16 attention is unsupported on CPU",
-                    })
-                    continue
-                for target in load_prompts(args.prompts_file, args.target):
-                    cases = compositions(target)
-                    with precision_context(device, dtype):
-                        baseline_logits = target_logits(
-                            model, tokenizer, cases["A_target_only"], device
-                        )
-                        baseline_top5 = torch.topk(baseline_logits, 5).indices.tolist()
-                        baseline_generated = batch_greedy_generate(
-                            model, tokenizer, cases["A_target_only"],
-                            args.max_new_tokens, device
-                        )[0]
-                        for name, prompts in cases.items():
-                            logits = target_logits(model, tokenizer, prompts, device)
-                            difference = (logits - baseline_logits).abs()
-                            top5 = torch.topk(logits, 5).indices.tolist()
-                            generated = batch_greedy_generate(
-                                model, tokenizer, prompts, args.max_new_tokens, device
-                            )[0]
-                            divergence = first_divergence(baseline_generated, generated)
-                            rows.append({
-                                "prompt": target,
-                                "backend": backend,
-                                "attention_fixed_split_size": (
-                                    args.attention_fixed_split_size
-                                ),
-                                "dtype": dtype,
-                                "norm_backend": norm_backend,
-                                "composition": name,
-                                "batch_size": len(prompts),
-                                "max_abs_diff": float(difference.max()),
-                                "mean_abs_diff": float(difference.mean()),
-                                "top1_changed": top5[0] != baseline_top5[0],
-                                "top5_changed": top5 != baseline_top5,
-                                "output_identical": divergence is None,
-                                "first_divergence_token": (
-                                    "" if divergence is None else divergence
-                                ),
-                                "status": "ok",
-                                "reason": "",
-                            })
-                            key = (
-                                f"{norm_backend}/{backend}/{dtype}/{target}/{name}"
+        for linear_backend in args.linear_backends.split(","):
+            for backend in args.backends.split(","):
+                model, tokenizer = load_model_and_tokenizer(args.checkpoint, device)
+                model.set_batch_invariant_backends(
+                    attention_backend=backend,
+                    rms_norm_backend=norm_backend,
+                    linear_backend=linear_backend,
+                    attention_fixed_split_size=args.attention_fixed_split_size,
+                    linear_tile_m=args.linear_tile_m,
+                    linear_tile_n=args.linear_tile_n,
+                    linear_k_block_size=args.linear_k_block_size,
+                )
+                for dtype in args.dtypes.split(","):
+                    if device.type == "cpu" and dtype == "float16":
+                        rows.append({
+                            "prompt": "", "backend": backend, "dtype": dtype,
+                            "norm_backend": norm_backend, "linear_backend": linear_backend,
+                            "composition": "",
+                            "status": "skipped",
+                            "reason": "float16 attention is unsupported on CPU",
+                        })
+                        continue
+                    for target in load_prompts(args.prompts_file, args.target):
+                        cases = compositions(target)
+                        with precision_context(device, dtype):
+                            baseline_logits = target_logits(
+                                model, tokenizer, cases["A_target_only"], device
                             )
-                            details[key] = {
-                                "prompts": prompts,
-                                "top5_token_ids": top5,
-                                "target_generated_token_ids": generated,
-                                "target_generated_text": tokenizer.decode(generated),
-                            }
+                            baseline_top5 = torch.topk(baseline_logits, 5).indices.tolist()
+                            baseline_generated = batch_greedy_generate(
+                                model, tokenizer, cases["A_target_only"],
+                                args.max_new_tokens, device
+                            )[0]
+                            for name, prompts in cases.items():
+                                logits = target_logits(model, tokenizer, prompts, device)
+                                difference = (logits - baseline_logits).abs()
+                                top5 = torch.topk(logits, 5).indices.tolist()
+                                generated = batch_greedy_generate(
+                                    model, tokenizer, prompts, args.max_new_tokens, device
+                                )[0]
+                                divergence = first_divergence(baseline_generated, generated)
+                                rows.append({
+                                    "prompt": target,
+                                    "backend": backend,
+                                    "attention_fixed_split_size": (
+                                        args.attention_fixed_split_size
+                                    ),
+                                    "dtype": dtype,
+                                    "norm_backend": norm_backend,
+                                    "linear_backend": linear_backend,
+                                    "linear_tile_m": args.linear_tile_m,
+                                    "linear_tile_n": args.linear_tile_n,
+                                    "linear_k_block_size": args.linear_k_block_size,
+                                    "composition": name,
+                                    "batch_size": len(prompts),
+                                    "max_abs_diff": float(difference.max()),
+                                    "mean_abs_diff": float(difference.mean()),
+                                    "top1_changed": top5[0] != baseline_top5[0],
+                                    "top5_changed": top5 != baseline_top5,
+                                    "output_identical": divergence is None,
+                                    "first_divergence_token": (
+                                        "" if divergence is None else divergence
+                                    ),
+                                    "status": "ok",
+                                    "reason": "",
+                                })
+                                key = (
+                                    f"{norm_backend}/{linear_backend}/{backend}/"
+                                    f"{dtype}/{target}/{name}"
+                                )
+                                details[key] = {
+                                    "prompts": prompts,
+                                    "top5_token_ids": top5,
+                                    "target_generated_token_ids": generated,
+                                    "target_generated_text": tokenizer.decode(generated),
+                                }
 
     save_csv(rows, args.output)
     save_json(

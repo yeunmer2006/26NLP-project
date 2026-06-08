@@ -1,0 +1,89 @@
+{
+  "all_fixed_tile_bitwise_equal": true,
+  "cases": [
+    {
+      "shape": "hidden",
+      "backend": "native",
+      "single_batch_size": 1,
+      "mixed_batch_size": 8,
+      "in_features": 480,
+      "out_features": 480,
+      "dtype": "torch.float16",
+      "bitwise_equal": false,
+      "max_abs_diff": 0.0078125,
+      "mean_abs_diff": 2.4414064682787284e-05,
+      "status": "ok",
+      "reason": ""
+    },
+    {
+      "shape": "hidden",
+      "backend": "fixed_tile",
+      "single_batch_size": 1,
+      "mixed_batch_size": 8,
+      "in_features": 480,
+      "out_features": 480,
+      "dtype": "torch.float16",
+      "bitwise_equal": true,
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "status": "ok",
+      "reason": ""
+    },
+    {
+      "shape": "mlp_up",
+      "backend": "native",
+      "single_batch_size": 1,
+      "mixed_batch_size": 8,
+      "in_features": 480,
+      "out_features": 1280,
+      "dtype": "torch.float16",
+      "bitwise_equal": false,
+      "max_abs_diff": 0.0078125,
+      "mean_abs_diff": 2.0301342374295928e-05,
+      "status": "ok",
+      "reason": ""
+    },
+    {
+      "shape": "mlp_up",
+      "backend": "fixed_tile",
+      "single_batch_size": 1,
+      "mixed_batch_size": 8,
+      "in_features": 480,
+      "out_features": 1280,
+      "dtype": "torch.float16",
+      "bitwise_equal": true,
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "status": "ok",
+      "reason": ""
+    },
+    {
+      "shape": "lm_head",
+      "backend": "native",
+      "single_batch_size": 1,
+      "mixed_batch_size": 8,
+      "in_features": 480,
+      "out_features": 259,
+      "dtype": "torch.float16",
+      "bitwise_equal": true,
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "status": "ok",
+      "reason": ""
+    },
+    {
+      "shape": "lm_head",
+      "backend": "fixed_tile",
+      "single_batch_size": 1,
+      "mixed_batch_size": 8,
+      "in_features": 480,
+      "out_features": 259,
+      "dtype": "torch.float16",
+      "bitwise_equal": true,
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "status": "ok",
+      "reason": ""
+    }
+  ]
+}

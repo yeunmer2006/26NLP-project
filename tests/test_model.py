@@ -2,7 +2,7 @@ import dataclasses
 
 import torch
 
-from src.model import ModelConfig, RMSNorm, TinyLlama
+from src.model import BatchInvariantLinear, ModelConfig, RMSNorm, TinyLlama, fixed_tile_matmul
 
 
 def test_model_forward_and_loss() -> None:
@@ -53,6 +53,10 @@ def test_flash_attention_2_bi_backend_is_batch_invariant() -> None:
         max_position_embeddings=16,
         attention_backend="flash_attn_2_bi",
         rms_norm_backend="fixed_tree",
+        linear_backend="fixed_tile",
+        linear_tile_m=2,
+        linear_tile_n=8,
+        linear_k_block_size=4,
     )
     model = TinyLlama(config).eval()
     target = torch.tensor([[1, 10, 11]])
@@ -78,6 +82,7 @@ def test_old_checkpoint_config_defaults_to_native_rmsnorm() -> None:
     }
     config = ModelConfig(**fields)
     assert config.rms_norm_backend == "native"
+    assert config.linear_backend == "native"
 
 
 def test_fixed_tree_rmsnorm_is_close_to_native() -> None:
@@ -97,6 +102,37 @@ def test_fixed_tree_rmsnorm_is_batch_invariant() -> None:
     target = torch.randn(1, 1, 480)
     mixed = torch.cat((target, torch.randn(7, 1, 480)), dim=0)
     assert torch.equal(norm(target)[0, 0], norm(mixed)[0, 0])
+
+
+def test_fixed_tile_matmul_matches_native() -> None:
+    torch.manual_seed(0)
+    values = torch.randn(2, 3, 17)
+    weight = torch.randn(11, 17)
+    candidate = fixed_tile_matmul(
+        values,
+        weight,
+        tile_m=2,
+        tile_n=5,
+        k_block_size=4,
+    )
+    reference = torch.nn.functional.linear(values, weight)
+    torch.testing.assert_close(candidate, reference, rtol=1e-5, atol=1e-6)
+
+
+def test_batch_invariant_linear_is_batch_invariant() -> None:
+    torch.manual_seed(0)
+    layer = BatchInvariantLinear(
+        17,
+        11,
+        backend="fixed_tile",
+        tile_m=2,
+        tile_n=5,
+        k_block_size=4,
+    )
+    target = torch.randn(1, 1, 17)
+    mixed = torch.randn(6, 1, 17)
+    mixed[0] = target[0]
+    assert torch.equal(layer(target)[0, 0], layer(mixed)[0, 0])
 
 
 def test_kv_cache_matches_full_forward() -> None:

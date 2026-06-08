@@ -1,0 +1,25 @@
+{
+  "device": "cuda",
+  "requested_dtype": "float16",
+  "tile_m": 16,
+  "tile_n": 64,
+  "k_block_size": 64,
+  "shapes": [
+    {
+      "name": "hidden",
+      "in_features": 480,
+      "out_features": 480
+    },
+    {
+      "name": "mlp_up",
+      "in_features": 480,
+      "out_features": 1280
+    },
+    {
+      "name": "lm_head",
+      "in_features": 480,
+      "out_features": 259
+    }
+  ],
+  "fixed_tile_note": "fixed_tile uses fixed 2D output tiles and fixed K-block traversal. It validates batch invariance but is not a fused tensor-core GEMM."
+}

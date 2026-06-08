@@ -32,12 +32,31 @@ mkdir -p \
   --hidden-size 480 --warmup 20 --iterations 100 --repeats 3 \
   --output "$output_dir/benchmarks/rmsnorm_benchmark.csv" \
   --invariance-output "$output_dir/determinism/rmsnorm_invariance.csv"
+"$python_bin" -m src.bench.matmul_benchmark \
+  --batch-sizes 1,4 --seq-lens 1,32,128 \
+  --shapes hidden:480:480,mlp_up:480:1280,lm_head:480:259 \
+  --tile-m 16 --tile-n 64 --k-block-size 64 \
+  --warmup 10 --iterations 20 --repeats 2 \
+  --output "$output_dir/benchmarks/matmul_benchmark.csv" \
+  --invariance-output "$output_dir/determinism/matmul_invariance.csv"
 "$python_bin" -m src.determinism.batch_sensitivity \
   --checkpoint "$checkpoint" \
   --backends eager,sdpa,flash_attn_2_bi \
   --attention-fixed-split-size 64 \
   --norm-backends native,fixed_tree \
+  --linear-backends native \
   --output "$output_dir/determinism/batch_sensitivity.csv"
+"$python_bin" -m src.determinism.batch_sensitivity \
+  --checkpoint "$checkpoint" \
+  --target "Once upon a time" \
+  --backends flash_attn_2_bi \
+  --attention-fixed-split-size 64 \
+  --norm-backends fixed_tree \
+  --linear-backends fixed_tile \
+  --linear-tile-m 16 --linear-tile-n 64 --linear-k-block-size 64 \
+  --dtypes float32 \
+  --max-new-tokens 1 \
+  --output "$output_dir/determinism/batch_invariant_model_smoke.csv"
 "$python_bin" -m src.determinism.divergence_search \
   --checkpoint "$checkpoint" \
   --documents 2000 --prefix-lengths 8,16,32,64,128 \

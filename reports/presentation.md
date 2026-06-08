@@ -1,8 +1,8 @@
 ---
 title: "TinyLM 模型推理的批次不变性及其加速"
-subtitle: "RMSNorm、Attention 归约固定与 FlashAttention-2 性能评估"
+subtitle: "RMSNorm、Matmul、Attention 归约固定与 FlashAttention-2 性能评估"
 author: "NLP Project"
-date: "2026-06-07"
+date: "2026-06-08"
 ---
 
 # 1. 问题与范围
@@ -12,12 +12,12 @@ date: "2026-06-07"
 - 训练一个 TinyLlama-style decoder-only 小语言模型
 - 对比 eager attention、PyTorch SDPA 和官方 FlashAttention-2
 - 研究 batch size / batch composition 对 `temperature=0` 推理的影响
-- 复现 fixed-tree RMSNorm 和 batch-invariant attention 的机制性修复
+- 复现 fixed-tree RMSNorm、Linear/Matmul 和 batch-invariant attention
 
 **边界**
 
 - 不是复现 TinyLlama 1.1B 完整训练
-- Matmul / Linear 的 batch-invariant 版本留到后续
+- fixed-order 路径是 PyTorch 参考实现，不是高性能 CUDA/Triton kernel
 - vLLM continuous batching 和更大模型是后续工作
 
 ::: notes
@@ -50,7 +50,7 @@ date: "2026-06-07"
 
 # 3. 训练结果
 
-![](results/main_experiments_30m_v2/figures/training.png){width=84%}
+![](../results/main_experiments_30m_v2/figures/training.png){width=84%}
 
 **关键结果**
 
@@ -115,22 +115,22 @@ date: "2026-06-07"
 
 # 6. Attention 性能结果
 
-![](results/main_experiments_30m_v2/figures/attention_latency.png){width=88%}
+![](../results/main_experiments_30m_v2/figures/attention_latency.png){width=88%}
 
 **Prefill**
 
-- FA2 vs eager：平均 5.11x
-- FA2 vs SDPA：平均 1.17x
-- 最大 shape `batch=8, seq=512`：FA2 vs eager 16.63x，FA2 vs SDPA 1.50x
+- FA2 vs eager：平均 3.44x
+- FA2 vs SDPA：平均 0.76x
+- 最大 shape `batch=8, seq=512`：FA2 vs eager 12.49x，FA2 vs SDPA 1.12x
 
 **Decode**
 
-- FA2 vs eager：平均 1.39x
-- FA2 vs SDPA：平均 0.99x
-- Decode shape 较小，FA2 与 SDPA 基本接近
+- FA2 vs eager：平均 0.65x
+- FA2 vs SDPA：平均 0.69x
+- 本轮短序列 decode 中，FA2 没有超过 eager/SDPA
 
 ::: notes
-这里讲结论：FA2 的优势主要在 prefill，decode 阶段没有稳定压过 SDPA。这和实验设置有关，因为 decode 是单 query，小 shape 下 kernel launch 和调度开销更明显。
+这里讲结论：FA2 相对 eager 的优势主要在 prefill，但平均没有压过 SDPA；只有最大 prefill shape 超过 SDPA。decode 是单 query，小 shape 下 kernel launch 和调度开销更明显。
 :::
 
 ---
@@ -142,13 +142,13 @@ date: "2026-06-07"
 | Backend | 平均峰值显存 | 最大峰值显存 |
 |---|---:|---:|
 | eager | 40.48 MB | 168.00 MB |
-| SDPA | 7.60 MB | 24.13 MB |
-| FlashAttention-2 | 3.83 MB | 12.13 MB |
+| SDPA | 7.59 MB | 24.75 MB |
+| FlashAttention-2 | 6.33 MB | 20.50 MB |
 
 **数值误差**
 
-- FA2 相对 SDPA 最大绝对误差：`9.765625e-4`
-- 最大平均绝对误差：`8.82e-6`
+- FA2 相对 SDPA 最大绝对误差：`4.8828125e-4`
+- 最大平均绝对误差：`8.16e-6`
 - attention benchmark 162 行全部 `ok`
 
 ::: notes
@@ -159,7 +159,7 @@ date: "2026-06-07"
 
 # 8. Batch Composition：固定 Prompt
 
-![](results/main_experiments_30m_v2/figures/batch_sensitivity.png){width=86%}
+![](../results/main_experiments_30m_v2/figures/batch_sensitivity.png){width=86%}
 
 **400 组固定 prompt 实验**
 
@@ -210,7 +210,7 @@ date: "2026-06-07"
 
 # 10. Fixed-tree 修复尝试
 
-![](results/main_experiments_30m_v2/figures/rmsnorm_latency.png){width=84%}
+![](../results/main_experiments_30m_v2/figures/rmsnorm_latency.png){width=84%}
 
 **Toy reduction**
 
@@ -223,30 +223,51 @@ date: "2026-06-07"
 - 18 个 RMSNorm invariance case 全部 bitwise equal
 - fixed-tree RMSNorm 平均延迟是 native 的 2.13x
 - 新增 `flash_attn_2_bi`：固定 attention online-softmax 归约顺序
-- 但 Linear / Matmul 尚未替换，所以不能宣称整个模型 batch invariant
+- 新增 `BatchInvariantLinear`：固定 projection、MLP、LM head 的 K 维归约顺序
 
 ::: notes
-这里要说清楚“已解决”和“未解决”的边界。fixed-tree RMSNorm 固定 hidden 维归约；
-`flash_attn_2_bi` 固定 KV split size 和 online-softmax 归约顺序；
-Linear / Matmul 尚未替换，所以还不能把完整模型说成 batch invariant。
+这里要说清楚边界：三类关键 reduction 都有参考实现，但 fixed-tile Linear 和
+`flash_attn_2_bi` 不是高性能 CUDA kernel。它们用于证明 batch-invariant 路径可行；
+加速数据仍主要看 SDPA 和官方 FlashAttention-2。
 :::
 
 ---
 
-# 11. 结论、下一步与引用
+# 11. Matmul 与模型级 Smoke
+
+![](../results/main_experiments_30m_v2/figures/matmul_invariance.png){width=82%}
+
+**Matmul / Linear**
+
+- `BatchInvariantLinear` 覆盖 q/k/v/o projection、SwiGLU MLP 和 LM head
+- fixed-tile matmul 固定 2D output tile 和 K-block 遍历顺序
+- `linear_tile_m` / `linear_tile_n` / `linear_k_block_size` 控制 reference 计算形状
+
+**训练 checkpoint smoke**
+
+- `fixed_tree` RMSNorm + `fixed_tile` Linear + `flash_attn_2_bi`
+- prompt 混入 batch size 2/4/8 后目标 logits 最大差异为 0
+- 1-token greedy 输出保持一致
+
+::: notes
+这页可以说：现在不是只做了 RMSNorm，而是把 matmul 和 attention 也接进 TinyLM。smoke test 用的是训练好的 30M checkpoint；它证明可行性，不代表 fixed-order Python 路径能加速。
+:::
+
+---
+
+# 12. 结论、下一步与引用
 
 **结论**
 
 - 30M TinyLlama-style 训练主线完成，validation PPL = 6.5866
 - 官方 FlashAttention-2 已在主模型 GQA shape 上完成 benchmark
-- FA2 在 prefill 上有明确收益，decode 中与 SDPA 接近
+- FA2 在 prefill 上快于 eager，但平均慢于 SDPA；decode 中也未超过 SDPA
 - batch composition 会造成 logits 漂移，低 margin prompt 下会导致 `temperature=0` greedy 分叉
-- fixed-tree RMSNorm 和 `flash_attn_2_bi` attention 已覆盖两个 reduction 风险点
-- Linear / Matmul 仍是下一步，端到端 batch invariance 还没完成
+- fixed-tree RMSNorm、`BatchInvariantLinear` 和 `flash_attn_2_bi` 已覆盖三类 reduction 风险点
 
 **下一步**
 
-- 实现 batch-invariant Linear / Matmul
+- 把 PyTorch fixed-tile Linear 换成高性能 CUDA/Triton GEMM
 - 接入 vLLM 或自定义 continuous batching
 - 扩展到 TinyLlama 1.1B / Qwen3-8B 和 A100 / H100
 
@@ -258,5 +279,5 @@ Linear / Matmul 尚未替换，所以还不能把完整模型说成 batch invari
 - Thinking Machines Lab, Batch Invariant Ops: https://github.com/thinking-machines-lab/batch_invariant_ops
 
 ::: notes
-最后强调下一步不是继续重跑本项目主线，而是把解决方案从 RMSNorm 扩到 Linear/Matmul，再放到真实 serving 的 continuous batching 里验证。
+最后强调下一步不是继续重跑本项目主线，而是把参考实现变成高性能 kernel，再放到真实 serving 的 continuous batching 里验证。
 :::

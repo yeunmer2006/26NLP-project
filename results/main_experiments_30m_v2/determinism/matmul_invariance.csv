@@ -1,0 +1,7 @@
+shape,backend,single_batch_size,mixed_batch_size,in_features,out_features,dtype,bitwise_equal,max_abs_diff,mean_abs_diff,status,reason
+hidden,native,1,8,480,480,torch.float16,False,0.0078125,2.4414064682787284e-05,ok,
+hidden,fixed_tile,1,8,480,480,torch.float16,True,0.0,0.0,ok,
+mlp_up,native,1,8,480,1280,torch.float16,False,0.0078125,2.0301342374295928e-05,ok,
+mlp_up,fixed_tile,1,8,480,1280,torch.float16,True,0.0,0.0,ok,
+lm_head,native,1,8,480,259,torch.float16,True,0.0,0.0,ok,
+lm_head,fixed_tile,1,8,480,259,torch.float16,True,0.0,0.0,ok,

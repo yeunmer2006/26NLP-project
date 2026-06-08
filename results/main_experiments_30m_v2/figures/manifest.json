@@ -1,0 +1,69 @@
+{
+  "generated": [
+    "results/main_experiments_30m_v2/figures/training.png",
+    "results/main_experiments_30m_v2/figures/attention_latency.png",
+    "results/main_experiments_30m_v2/figures/attention_invariance.png",
+    "results/main_experiments_30m_v2/figures/rmsnorm_latency.png",
+    "results/main_experiments_30m_v2/figures/matmul_latency.png",
+    "results/main_experiments_30m_v2/figures/matmul_invariance.png",
+    "results/main_experiments_30m_v2/figures/batch_sensitivity.png",
+    "results/main_experiments_30m_v2/figures/reduction_error.png",
+    "results/main_experiments_30m_v2/figures/fixed_tree_runtime.png"
+  ],
+  "artifacts": [
+    {
+      "figure": "results/main_experiments_30m_v2/figures/training.png",
+      "sources": [
+        "results/train_30m/training_metrics.csv"
+      ]
+    },
+    {
+      "figure": "results/main_experiments_30m_v2/figures/attention_latency.png",
+      "sources": [
+        "results/main_experiments_30m_v2/benchmarks/attention_benchmark.csv"
+      ]
+    },
+    {
+      "figure": "results/main_experiments_30m_v2/figures/attention_invariance.png",
+      "sources": [
+        "results/main_experiments_30m_v2/determinism/attention_invariance.csv"
+      ]
+    },
+    {
+      "figure": "results/main_experiments_30m_v2/figures/rmsnorm_latency.png",
+      "sources": [
+        "results/main_experiments_30m_v2/benchmarks/rmsnorm_benchmark.csv"
+      ]
+    },
+    {
+      "figure": "results/main_experiments_30m_v2/figures/matmul_latency.png",
+      "sources": [
+        "results/main_experiments_30m_v2/benchmarks/matmul_benchmark.csv"
+      ]
+    },
+    {
+      "figure": "results/main_experiments_30m_v2/figures/matmul_invariance.png",
+      "sources": [
+        "results/main_experiments_30m_v2/determinism/matmul_invariance.csv"
+      ]
+    },
+    {
+      "figure": "results/main_experiments_30m_v2/figures/batch_sensitivity.png",
+      "sources": [
+        "results/main_experiments_30m_v2/determinism/batch_sensitivity.csv"
+      ]
+    },
+    {
+      "figure": "results/main_experiments_30m_v2/figures/reduction_error.png",
+      "sources": [
+        "results/main_experiments_30m_v2/toy/reduction_order.csv"
+      ]
+    },
+    {
+      "figure": "results/main_experiments_30m_v2/figures/fixed_tree_runtime.png",
+      "sources": [
+        "results/main_experiments_30m_v2/toy/batch_invariant_reduction.csv"
+      ]
+    }
+  ]
+}

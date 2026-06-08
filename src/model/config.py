@@ -20,9 +20,15 @@ class ModelConfig:
     attention_backend: str = "sdpa"
     attention_fixed_split_size: int = 64
     rms_norm_backend: str = "native"
+    linear_backend: str = "native"
+    linear_tile_m: int = 16
+    linear_tile_n: int = 64
+    linear_k_block_size: int = 64
     tie_word_embeddings: bool = True
 
     def __post_init__(self) -> None:
+        if self.linear_backend == "fixed_tree":
+            self.linear_backend = "fixed_tile"
         if self.hidden_size % self.num_attention_heads != 0:
             raise ValueError("hidden_size must be divisible by num_attention_heads")
         if self.num_attention_heads % self.num_key_value_heads != 0:
@@ -37,6 +43,14 @@ class ModelConfig:
             raise ValueError("attention_fixed_split_size must be positive")
         if self.rms_norm_backend not in {"native", "fixed_tree"}:
             raise ValueError("rms_norm_backend must be 'native' or 'fixed_tree'")
+        if self.linear_backend not in {"native", "fixed_tile"}:
+            raise ValueError("linear_backend must be 'native' or 'fixed_tile'")
+        if self.linear_tile_m <= 0:
+            raise ValueError("linear_tile_m must be positive")
+        if self.linear_tile_n <= 0:
+            raise ValueError("linear_tile_n must be positive")
+        if self.linear_k_block_size <= 0:
+            raise ValueError("linear_k_block_size must be positive")
 
     @classmethod
     def from_json(cls, path: str | Path) -> "ModelConfig":

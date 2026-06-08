@@ -1,0 +1,9 @@
+{
+  "dataset": "Salesforce/wikitext",
+  "dataset_config": "wikitext-2-raw-v1",
+  "split": "test",
+  "checkpoint": "results/train_30m/best_checkpoint.pt",
+  "batches": 100,
+  "loss": 6.775097460746765,
+  "perplexity": 875.7647115580914
+}

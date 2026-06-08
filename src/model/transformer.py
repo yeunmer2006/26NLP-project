@@ -29,6 +29,101 @@ def fixed_tree_max_last_dim(values: torch.Tensor) -> torch.Tensor:
     return values
 
 
+def fixed_tile_matmul(
+    input: torch.Tensor,
+    weight: torch.Tensor,
+    *,
+    bias: torch.Tensor | None = None,
+    tile_m: int = 16,
+    tile_n: int = 64,
+    k_block_size: int = 64,
+) -> torch.Tensor:
+    """Linear matmul with fixed output tiles and fixed K-block traversal.
+
+    This is a PyTorch reference for the data-parallel matmul strategy described
+    in batch-invariant inference work: each output tile owns its K reduction,
+    K blocks are visited in a fixed order, and no Split-K/Stream-K style partial
+    reductions are introduced. It is intentionally not a fused tensor-core GEMM.
+    """
+    if input.shape[-1] != weight.shape[-1]:
+        raise ValueError("input features must match weight features")
+    if tile_m <= 0 or tile_n <= 0 or k_block_size <= 0:
+        raise ValueError("tile_m, tile_n, and k_block_size must be positive")
+
+    input_dtype = input.dtype
+    flat_input = input.reshape(-1, input.shape[-1]).float()
+    flat_weight = weight.float()
+    output = torch.empty(
+        flat_input.shape[0],
+        weight.shape[0],
+        dtype=torch.float32,
+        device=input.device,
+    )
+    for m_start in range(0, flat_input.shape[0], tile_m):
+        m_end = min(m_start + tile_m, flat_input.shape[0])
+        input_tile = flat_input[m_start:m_end]
+        for n_start in range(0, weight.shape[0], tile_n):
+            n_end = min(n_start + tile_n, weight.shape[0])
+            accumulator = torch.zeros(
+                m_end - m_start,
+                n_end - n_start,
+                dtype=torch.float32,
+                device=input.device,
+            )
+            for k_start in range(0, weight.shape[1], k_block_size):
+                k_end = min(k_start + k_block_size, weight.shape[1])
+                products = (
+                    input_tile[:, None, k_start:k_end]
+                    * flat_weight[n_start:n_end, k_start:k_end][None, :, :]
+                )
+                accumulator = accumulator + fixed_tree_sum_last_dim(products).squeeze(-1)
+            output[m_start:m_end, n_start:n_end] = accumulator
+    if bias is not None:
+        output = output + bias.float()
+    output = output.reshape(*input.shape[:-1], weight.shape[0])
+    return output.to(input_dtype)
+
+
+class BatchInvariantLinear(nn.Module):
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        bias: bool = False,
+        backend: str = "native",
+        tile_m: int = 16,
+        tile_n: int = 64,
+        k_block_size: int = 64,
+    ) -> None:
+        super().__init__()
+        if backend == "fixed_tree":
+            backend = "fixed_tile"
+        if backend not in {"native", "fixed_tile"}:
+            raise ValueError("backend must be 'native' or 'fixed_tile'")
+        if tile_m <= 0 or tile_n <= 0 or k_block_size <= 0:
+            raise ValueError("tile_m, tile_n, and k_block_size must be positive")
+        self.in_features = in_features
+        self.out_features = out_features
+        self.backend = backend
+        self.tile_m = tile_m
+        self.tile_n = tile_n
+        self.k_block_size = k_block_size
+        self.weight = nn.Parameter(torch.empty(out_features, in_features))
+        self.bias = nn.Parameter(torch.empty(out_features)) if bias else None
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        if self.backend == "fixed_tile":
+            return fixed_tile_matmul(
+                input,
+                self.weight,
+                bias=self.bias,
+                tile_m=self.tile_m,
+                tile_n=self.tile_n,
+                k_block_size=self.k_block_size,
+            )
+        return F.linear(input, self.weight, self.bias)
+
+
 def flash_attention_2_batch_invariant(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -187,10 +282,42 @@ class CausalSelfAttention(nn.Module):
         self.dropout = config.attention_dropout
         self.fixed_split_size = config.attention_fixed_split_size
 
-        self.q_proj = nn.Linear(config.hidden_size, self.num_heads * self.head_dim, bias=False)
-        self.k_proj = nn.Linear(config.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
-        self.v_proj = nn.Linear(config.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
-        self.o_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
+        self.q_proj = BatchInvariantLinear(
+            config.hidden_size,
+            self.num_heads * self.head_dim,
+            bias=False,
+            backend=config.linear_backend,
+            tile_m=config.linear_tile_m,
+            tile_n=config.linear_tile_n,
+            k_block_size=config.linear_k_block_size,
+        )
+        self.k_proj = BatchInvariantLinear(
+            config.hidden_size,
+            self.num_kv_heads * self.head_dim,
+            bias=False,
+            backend=config.linear_backend,
+            tile_m=config.linear_tile_m,
+            tile_n=config.linear_tile_n,
+            k_block_size=config.linear_k_block_size,
+        )
+        self.v_proj = BatchInvariantLinear(
+            config.hidden_size,
+            self.num_kv_heads * self.head_dim,
+            bias=False,
+            backend=config.linear_backend,
+            tile_m=config.linear_tile_m,
+            tile_n=config.linear_tile_n,
+            k_block_size=config.linear_k_block_size,
+        )
+        self.o_proj = BatchInvariantLinear(
+            config.hidden_size,
+            config.hidden_size,
+            bias=False,
+            backend=config.linear_backend,
+            tile_m=config.linear_tile_m,
+            tile_n=config.linear_tile_n,
+            k_block_size=config.linear_k_block_size,
+        )
         self.rope = RotaryEmbedding(
             self.head_dim, config.max_position_embeddings, config.rope_theta
         )
@@ -302,9 +429,33 @@ class CausalSelfAttention(nn.Module):
 class SwiGLU(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
-        self.gate_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
-        self.up_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
-        self.down_proj = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
+        self.gate_proj = BatchInvariantLinear(
+            config.hidden_size,
+            config.intermediate_size,
+            bias=False,
+            backend=config.linear_backend,
+            tile_m=config.linear_tile_m,
+            tile_n=config.linear_tile_n,
+            k_block_size=config.linear_k_block_size,
+        )
+        self.up_proj = BatchInvariantLinear(
+            config.hidden_size,
+            config.intermediate_size,
+            bias=False,
+            backend=config.linear_backend,
+            tile_m=config.linear_tile_m,
+            tile_n=config.linear_tile_n,
+            k_block_size=config.linear_k_block_size,
+        )
+        self.down_proj = BatchInvariantLinear(
+            config.intermediate_size,
+            config.hidden_size,
+            bias=False,
+            backend=config.linear_backend,
+            tile_m=config.linear_tile_m,
+            tile_n=config.linear_tile_n,
+            k_block_size=config.linear_k_block_size,
+        )
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         return self.down_proj(F.silu(self.gate_proj(hidden_states)) * self.up_proj(hidden_states))
@@ -358,15 +509,71 @@ class TinyLlama(nn.Module):
         self.norm = RMSNorm(
             config.hidden_size, config.rms_norm_eps, config.rms_norm_backend
         )
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.lm_head = BatchInvariantLinear(
+            config.hidden_size,
+            config.vocab_size,
+            bias=False,
+            backend=config.linear_backend,
+            tile_m=config.linear_tile_m,
+            tile_n=config.linear_tile_n,
+            k_block_size=config.linear_k_block_size,
+        )
         self.apply(self._initialize_weights)
         if config.tie_word_embeddings:
             self.lm_head.weight = self.embed_tokens.weight
 
     @staticmethod
     def _initialize_weights(module: nn.Module) -> None:
-        if isinstance(module, (nn.Linear, nn.Embedding)):
+        if isinstance(module, (BatchInvariantLinear, nn.Linear, nn.Embedding)):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+    def set_batch_invariant_backends(
+        self,
+        *,
+        attention_backend: str | None = None,
+        rms_norm_backend: str | None = None,
+        linear_backend: str | None = None,
+        attention_fixed_split_size: int | None = None,
+        linear_tile_m: int | None = None,
+        linear_tile_n: int | None = None,
+        linear_k_block_size: int | None = None,
+    ) -> None:
+        if attention_backend is not None:
+            self.config.attention_backend = attention_backend
+        if rms_norm_backend is not None:
+            self.config.rms_norm_backend = rms_norm_backend
+        if linear_backend is not None:
+            self.config.linear_backend = (
+                "fixed_tile" if linear_backend == "fixed_tree" else linear_backend
+            )
+        if attention_fixed_split_size is not None:
+            self.config.attention_fixed_split_size = attention_fixed_split_size
+        if linear_tile_m is not None:
+            self.config.linear_tile_m = linear_tile_m
+        if linear_tile_n is not None:
+            self.config.linear_tile_n = linear_tile_n
+        if linear_k_block_size is not None:
+            self.config.linear_k_block_size = linear_k_block_size
+        for module in self.modules():
+            if isinstance(module, CausalSelfAttention):
+                if attention_backend is not None:
+                    module.backend = attention_backend
+                if attention_fixed_split_size is not None:
+                    module.fixed_split_size = attention_fixed_split_size
+            elif isinstance(module, RMSNorm):
+                if rms_norm_backend is not None:
+                    module.backend = rms_norm_backend
+            elif isinstance(module, BatchInvariantLinear):
+                if linear_backend is not None:
+                    module.backend = (
+                        "fixed_tile" if linear_backend == "fixed_tree" else linear_backend
+                    )
+                if linear_tile_m is not None:
+                    module.tile_m = linear_tile_m
+                if linear_tile_n is not None:
+                    module.tile_n = linear_tile_n
+                if linear_k_block_size is not None:
+                    module.k_block_size = linear_k_block_size
 
     def forward(
         self,

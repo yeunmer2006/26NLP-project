@@ -1,0 +1,13 @@
+{
+  "device": "cuda",
+  "dtype": "torch.float16",
+  "parameter_count": 34264800,
+  "steps": 1526,
+  "tokens_seen": 50003968,
+  "wall_time_seconds": 1397.7025200900025,
+  "peak_memory_mb": 2303.2578125,
+  "best_validation_loss": 1.8850439977645874,
+  "final_train_loss": 1.8402699679136276,
+  "final_validation_loss": 1.8850439977645874,
+  "final_perplexity": 6.586644233262334
+}

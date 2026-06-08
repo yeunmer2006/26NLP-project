@@ -1,0 +1,8 @@
+{
+  "seed": 42,
+  "device": "cpu",
+  "dtype": "float32",
+  "ordinary_unique_results": 4,
+  "fixed_tree_unique_results": 1,
+  "interpretation": "A fixed tree preserves the arithmetic order across block settings, trading scheduling freedom for reproducibility."
+}

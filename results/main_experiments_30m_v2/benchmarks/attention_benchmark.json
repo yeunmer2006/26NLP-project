@@ -1,0 +1,172 @@
+{
+  "device": "cuda",
+  "requested_dtype": "float16",
+  "num_heads": 8,
+  "num_kv_heads": 4,
+  "head_dim": 60,
+  "fixed_split_size": 64,
+  "backends": [
+    "eager",
+    "sdpa",
+    "flash_attn_2"
+  ],
+  "invariance_backends": [
+    "eager",
+    "sdpa",
+    "flash_attn_2",
+    "flash_attn_2_bi"
+  ],
+  "flash_attn_available": true,
+  "flash_attn_version": "2.8.3",
+  "flash_attn_api": "flash_attn.flash_attn_func",
+  "flash_attn_implementation": "flash_attn_2 uses the official Dao-AILab package. flash_attn_2_bi is a local FlashAttention-2-style fixed-order online-softmax reference path.",
+  "batch_invariant_attention_backend": "flash_attn_2_bi",
+  "attention_invariance_output": "results/main_experiments_30m_v2/determinism/attention_invariance.csv",
+  "comparisons": [
+    {
+      "workload": "prefill",
+      "batch_size": 1,
+      "seq_len": 128,
+      "sdpa_speedup_vs_eager": 2.004596337308871,
+      "flash_speedup_vs_eager": 1.4526487639451777,
+      "flash_speedup_vs_sdpa": 0.7246589933888279
+    },
+    {
+      "workload": "prefill",
+      "batch_size": 1,
+      "seq_len": 256,
+      "sdpa_speedup_vs_eager": 2.4416079378061606,
+      "flash_speedup_vs_eager": 1.640860792658633,
+      "flash_speedup_vs_sdpa": 0.67204106247008
+    },
+    {
+      "workload": "prefill",
+      "batch_size": 1,
+      "seq_len": 512,
+      "sdpa_speedup_vs_eager": 2.565077729671184,
+      "flash_speedup_vs_eager": 1.7731366099114072,
+      "flash_speedup_vs_sdpa": 0.6912603814694943
+    },
+    {
+      "workload": "prefill",
+      "batch_size": 4,
+      "seq_len": 128,
+      "sdpa_speedup_vs_eager": 2.4139818800263555,
+      "flash_speedup_vs_eager": 1.4930952416449332,
+      "flash_speedup_vs_sdpa": 0.6185196558429146
+    },
+    {
+      "workload": "prefill",
+      "batch_size": 4,
+      "seq_len": 256,
+      "sdpa_speedup_vs_eager": 2.4730150296643556,
+      "flash_speedup_vs_eager": 1.7827535673488846,
+      "flash_speedup_vs_sdpa": 0.7208826254447975
+    },
+    {
+      "workload": "prefill",
+      "batch_size": 4,
+      "seq_len": 512,
+      "sdpa_speedup_vs_eager": 7.597318654872852,
+      "flash_speedup_vs_eager": 6.466687068188602,
+      "flash_speedup_vs_sdpa": 0.851180181055184
+    },
+    {
+      "workload": "prefill",
+      "batch_size": 8,
+      "seq_len": 128,
+      "sdpa_speedup_vs_eager": 2.2075222738667843,
+      "flash_speedup_vs_eager": 1.475522898573067,
+      "flash_speedup_vs_sdpa": 0.6684067998047795
+    },
+    {
+      "workload": "prefill",
+      "batch_size": 8,
+      "seq_len": 256,
+      "sdpa_speedup_vs_eager": 2.8990892918185964,
+      "flash_speedup_vs_eager": 2.371576018561569,
+      "flash_speedup_vs_sdpa": 0.8180417296060174
+    },
+    {
+      "workload": "prefill",
+      "batch_size": 8,
+      "seq_len": 512,
+      "sdpa_speedup_vs_eager": 11.190173868547145,
+      "flash_speedup_vs_eager": 12.494544621947766,
+      "flash_speedup_vs_sdpa": 1.1165639398210683
+    },
+    {
+      "workload": "decode",
+      "batch_size": 1,
+      "seq_len": 128,
+      "sdpa_speedup_vs_eager": 1.1124280142801413,
+      "flash_speedup_vs_eager": 0.7015056869478024,
+      "flash_speedup_vs_sdpa": 0.630607713885874
+    },
+    {
+      "workload": "decode",
+      "batch_size": 1,
+      "seq_len": 256,
+      "sdpa_speedup_vs_eager": 0.9531768178030552,
+      "flash_speedup_vs_eager": 0.6387916467234498,
+      "flash_speedup_vs_sdpa": 0.6701711946748546
+    },
+    {
+      "workload": "decode",
+      "batch_size": 1,
+      "seq_len": 512,
+      "sdpa_speedup_vs_eager": 0.8746435160129545,
+      "flash_speedup_vs_eager": 0.5923349860952898,
+      "flash_speedup_vs_sdpa": 0.6772301803544344
+    },
+    {
+      "workload": "decode",
+      "batch_size": 4,
+      "seq_len": 128,
+      "sdpa_speedup_vs_eager": 1.113404212413288,
+      "flash_speedup_vs_eager": 0.7010946980492451,
+      "flash_speedup_vs_sdpa": 0.6296856884793279
+    },
+    {
+      "workload": "decode",
+      "batch_size": 4,
+      "seq_len": 256,
+      "sdpa_speedup_vs_eager": 0.9919888534525443,
+      "flash_speedup_vs_eager": 0.6741057791226854,
+      "flash_speedup_vs_sdpa": 0.6795497517704053
+    },
+    {
+      "workload": "decode",
+      "batch_size": 4,
+      "seq_len": 512,
+      "sdpa_speedup_vs_eager": 0.8813250936664937,
+      "flash_speedup_vs_eager": 0.642372010533874,
+      "flash_speedup_vs_sdpa": 0.7288706688941243
+    },
+    {
+      "workload": "decode",
+      "batch_size": 8,
+      "seq_len": 128,
+      "sdpa_speedup_vs_eager": 1.012861903849831,
+      "flash_speedup_vs_eager": 0.6135334648161749,
+      "flash_speedup_vs_sdpa": 0.6057424634929685
+    },
+    {
+      "workload": "decode",
+      "batch_size": 8,
+      "seq_len": 256,
+      "sdpa_speedup_vs_eager": 0.8842527118776472,
+      "flash_speedup_vs_eager": 0.624852763906171,
+      "flash_speedup_vs_sdpa": 0.7066450071488511
+    },
+    {
+      "workload": "decode",
+      "batch_size": 8,
+      "seq_len": 512,
+      "sdpa_speedup_vs_eager": 0.8122337133450217,
+      "flash_speedup_vs_eager": 0.7004980608096026,
+      "flash_speedup_vs_sdpa": 0.8624341113898633
+    }
+  ],
+  "note": "This is a forward-only inference microbenchmark, not the paper's combined forward+backward A100 benchmark. Prefill uses full causal attention. Decode uses one query token against the existing KV length with FlashAttention-2's bottom-right causal-mask alignment; it excludes KV-cache management overhead."
+}

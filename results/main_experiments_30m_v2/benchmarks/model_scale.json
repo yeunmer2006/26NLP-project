@@ -1,0 +1,23 @@
+{
+  "device": "cuda",
+  "models": [
+    {
+      "model": "30m",
+      "parameter_count": 30549120,
+      "status": "ok",
+      "peak_memory_mb": 431.0986328125
+    },
+    {
+      "model": "60m",
+      "parameter_count": 60330240,
+      "status": "ok",
+      "peak_memory_mb": 945.705078125
+    },
+    {
+      "model": "100m",
+      "parameter_count": 99745920,
+      "status": "ok",
+      "peak_memory_mb": 1485.22265625
+    }
+  ]
+}

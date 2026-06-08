@@ -1,0 +1,131 @@
+{
+  "all_fixed_tree_bitwise_equal": true,
+  "cases": [
+    {
+      "backend": "native",
+      "batch_size": 1,
+      "seq_len": 128,
+      "bitwise_equal": true,
+      "max_abs_diff": 0.0
+    },
+    {
+      "backend": "fixed_tree",
+      "batch_size": 1,
+      "seq_len": 128,
+      "bitwise_equal": true,
+      "max_abs_diff": 0.0
+    },
+    {
+      "backend": "native",
+      "batch_size": 1,
+      "seq_len": 256,
+      "bitwise_equal": true,
+      "max_abs_diff": 0.0
+    },
+    {
+      "backend": "fixed_tree",
+      "batch_size": 1,
+      "seq_len": 256,
+      "bitwise_equal": true,
+      "max_abs_diff": 0.0
+    },
+    {
+      "backend": "native",
+      "batch_size": 1,
+      "seq_len": 512,
+      "bitwise_equal": true,
+      "max_abs_diff": 0.0
+    },
+    {
+      "backend": "fixed_tree",
+      "batch_size": 1,
+      "seq_len": 512,
+      "bitwise_equal": true,
+      "max_abs_diff": 0.0
+    },
+    {
+      "backend": "native",
+      "batch_size": 4,
+      "seq_len": 128,
+      "bitwise_equal": true,
+      "max_abs_diff": 0.0
+    },
+    {
+      "backend": "fixed_tree",
+      "batch_size": 4,
+      "seq_len": 128,
+      "bitwise_equal": true,
+      "max_abs_diff": 0.0
+    },
+    {
+      "backend": "native",
+      "batch_size": 4,
+      "seq_len": 256,
+      "bitwise_equal": true,
+      "max_abs_diff": 0.0
+    },
+    {
+      "backend": "fixed_tree",
+      "batch_size": 4,
+      "seq_len": 256,
+      "bitwise_equal": true,
+      "max_abs_diff": 0.0
+    },
+    {
+      "backend": "native",
+      "batch_size": 4,
+      "seq_len": 512,
+      "bitwise_equal": true,
+      "max_abs_diff": 0.0
+    },
+    {
+      "backend": "fixed_tree",
+      "batch_size": 4,
+      "seq_len": 512,
+      "bitwise_equal": true,
+      "max_abs_diff": 0.0
+    },
+    {
+      "backend": "native",
+      "batch_size": 8,
+      "seq_len": 128,
+      "bitwise_equal": true,
+      "max_abs_diff": 0.0
+    },
+    {
+      "backend": "fixed_tree",
+      "batch_size": 8,
+      "seq_len": 128,
+      "bitwise_equal": true,
+      "max_abs_diff": 0.0
+    },
+    {
+      "backend": "native",
+      "batch_size": 8,
+      "seq_len": 256,
+      "bitwise_equal": true,
+      "max_abs_diff": 0.0
+    },
+    {
+      "backend": "fixed_tree",
+      "batch_size": 8,
+      "seq_len": 256,
+      "bitwise_equal": true,
+      "max_abs_diff": 0.0
+    },
+    {
+      "backend": "native",
+      "batch_size": 8,
+      "seq_len": 512,
+      "bitwise_equal": true,
+      "max_abs_diff": 0.0
+    },
+    {
+      "backend": "fixed_tree",
+      "batch_size": 8,
+      "seq_len": 512,
+      "bitwise_equal": true,
+      "max_abs_diff": 0.0
+    }
+  ]
+}

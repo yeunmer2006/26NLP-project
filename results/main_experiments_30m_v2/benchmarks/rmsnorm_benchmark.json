@@ -1,0 +1,5 @@
+{
+  "device": "cuda",
+  "requested_dtype": "float16",
+  "hidden_size": 480
+}

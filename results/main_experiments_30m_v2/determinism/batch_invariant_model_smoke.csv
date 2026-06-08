@@ -1,0 +1,6 @@
+prompt,backend,attention_fixed_split_size,dtype,norm_backend,linear_backend,linear_tile_m,linear_tile_n,linear_k_block_size,composition,batch_size,max_abs_diff,mean_abs_diff,top1_changed,top5_changed,output_identical,first_divergence_token,status,reason
+Once upon a time,flash_attn_2_bi,64,float32,fixed_tree,fixed_tile,16,64,64,A_target_only,1,0.0,0.0,False,False,True,,ok,
+Once upon a time,flash_attn_2_bi,64,float32,fixed_tree,fixed_tile,16,64,64,B_one_short,2,0.0,0.0,False,False,True,,ok,
+Once upon a time,flash_attn_2_bi,64,float32,fixed_tree,fixed_tile,16,64,64,C_seven_short,8,0.0,0.0,False,False,True,,ok,
+Once upon a time,flash_attn_2_bi,64,float32,fixed_tree,fixed_tile,16,64,64,D_one_long,2,0.0,0.0,False,False,True,,ok,
+Once upon a time,flash_attn_2_bi,64,float32,fixed_tree,fixed_tile,16,64,64,E_mixed_lengths,4,0.0,0.0,False,False,True,,ok,

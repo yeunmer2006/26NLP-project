@@ -1,0 +1,12 @@
+{
+  "git_commit": "646f53973cf755b7122b1f687bc7002d99cae0f9",
+  "git_status": "M .gitignore\n M README.md\n M reports/final_report.md\n M scripts/run_main_experiments.sh\n M src/analysis/plot_results.py\n M src/bench/attention_benchmark.py\n M src/bench/environment_report.py\n M src/determinism/batch_sensitivity.py\n M src/model/__init__.py\n M src/model/config.py\n M src/model/transformer.py\n M tests/test_model.py\n?? src/bench/rmsnorm_benchmark.py\n?? src/determinism/divergence_search.py\n?? tests/test_attention_benchmark.py\n?? tests/test_divergence_search.py",
+  "platform": "Linux-5.15.167.4-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python": "3.11.15",
+  "pytorch": "2.5.1",
+  "cuda_available": true,
+  "cuda_version": "12.1",
+  "cudnn_version": 90100,
+  "gpu": "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "flash_attn": "2.8.3"
+}

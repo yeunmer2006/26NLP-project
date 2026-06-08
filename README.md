@@ -1,9 +1,9 @@
 # TinyLM Inference Batch Invariance and Acceleration
 
-课程项目：先训练一个 TinyLlama-style 小语言模型，再在这个 TinyLM 上复现和评估
-模型推理的 batch invariance 方法及其加速效果。核心问题是：相同 prompt 在不同
-batch size / batch composition 下能否得到逐比特相同的 logits 和 greedy output，
-以及固定 kernel 归约策略会带来多少性能代价。
+课程项目：已训练完成一个 TinyLlama-style 30M TinyLM，当前阶段是在这个 TinyLM
+checkpoint 上复现和评估模型推理的 batch invariance 方法及其加速效果。核心问题是：
+相同 prompt 在不同 batch size / batch composition 下能否得到逐比特相同的 logits 和
+greedy output，以及固定 kernel 归约策略会带来多少性能代价。
 
 模型实现包含 RMSNorm、RoPE、GQA、SwiGLU 和 causal LM objective。30M 配置是主实验，
 60M 只做短 token 预算对照，100M 只做参数量和单步显存可行性检查。
@@ -11,6 +11,14 @@ batch size / batch composition 下能否得到逐比特相同的 logits 和 gree
 > 本仓库的可训练主模型是 **TinyLlama-style 30M 模型**，不是对 TinyLlama 1.1B
 > 完整训练成本的宣称复现。TinyLlama 1.1B、Qwen3-8B 和 vLLM 连续批处理实验属于
 > 有足够显存和时间时的扩展复现。
+
+当前默认实验入口使用已经训练好的 checkpoint：
+
+```text
+results/train_30m/best_checkpoint.pt
+```
+
+如果该文件存在，后续无需重新运行训练脚本；直接运行主实验和绘图即可。
 
 ## 研究问题
 
@@ -30,6 +38,23 @@ continuous/dynamic batching
   -> near-tie token ranking changes
   -> greedy generation diverges
 ```
+
+## 官方路线与本项目对应关系
+
+Thinking Machines Lab 的 batch-invariant inference 路线要求所有涉及 reduction 的
+关键 kernel 都不随 batch size / batch composition 改变归约策略。本项目不接入
+vLLM/FlexAttention/`torch.Library` serving，也不实现 CUDA/Triton production kernel；
+而是在训练好的 TinyLM 上实现可检查的 PyTorch reference path。
+
+| 官方路线 | 本项目实现 | 边界 |
+|---|---|---|
+| RMSNorm：一个 row/token 的 hidden-dim reduction 保持固定策略，避免小 batch split-reduction | `RMSNorm(backend="fixed_tree")` | PyTorch reference，不是单 block CUDA kernel |
+| Matmul/Linear：固定 2D output tile，固定 K-block 遍历顺序，避免 Split-K/Stream-K | `BatchInvariantLinear(backend="fixed_tile")` | PyTorch reference，不是 tensor-core GEMM |
+| Attention：FlashAttention-2/FlexAttention 风格，沿 Q 处理，KV 固定顺序归约，decode 使用 fixed split-size Split-KV 思想 | `flash_attn_2_bi` | PyTorch reference，不是官方 FlexAttention/vLLM backend |
+| Serving 替换：vLLM + FlexAttention + `torch.Library` 替换算子 | 未实现 | 后续扩展 |
+
+因此，本项目可以说是在 TinyLM 上复现官方 batch-invariant kernel strategy 的核心
+思想；不能说已经实现官方高性能 deterministic serving。
 
 ## Conda 环境
 
@@ -99,6 +124,9 @@ python -m src.infer.generate \
 `results/smoke_run/`。
 
 ## 30M 主训练
+
+30M 主训练已经完成。只有在 `results/train_30m/best_checkpoint.pt` 缺失时，才需要
+重新运行本节命令。
 
 ```bash
 set -o pipefail
@@ -200,16 +228,23 @@ results/main_experiments_30m_v2/
 ├── benchmarks/attention_benchmark.json
 ├── benchmarks/rmsnorm_benchmark.csv
 ├── benchmarks/rmsnorm_benchmark.json
+├── benchmarks/matmul_benchmark.csv
+├── benchmarks/matmul_benchmark.json
 ├── benchmarks/model_scale.json
 ├── determinism/batch_sensitivity.csv
 ├── determinism/batch_sensitivity.json
+├── determinism/batch_invariant_model_smoke.csv
+├── determinism/batch_invariant_model_smoke.json
 ├── determinism/prompt_margin_candidates.csv
 ├── determinism/prompt_margin_candidates.json
 ├── determinism/divergence_search.csv
 ├── determinism/divergence_search.json
 ├── determinism/attention_invariance.csv
+├── determinism/attention_invariance.json
 ├── determinism/rmsnorm_invariance.csv
 ├── determinism/rmsnorm_invariance.json
+├── determinism/matmul_invariance.csv
+├── determinism/matmul_invariance.json
 ├── toy/reduction_order.csv
 ├── toy/reduction_order.json
 ├── toy/batch_invariant_reduction.csv
@@ -254,6 +289,22 @@ python -m src.bench.rmsnorm_benchmark \
   --invariance-output results/main_experiments_30m_v2/determinism/rmsnorm_invariance.csv
 ```
 
+native 与 fixed-tile Matmul/Linear 性能和算子逐比特一致性：
+
+```bash
+python -m src.bench.matmul_benchmark \
+  --batch-sizes 1,4 --seq-lens 1,32,128 \
+  --shapes hidden:480:480,mlp_up:480:1280,lm_head:480:259 \
+  --tile-m 16 --tile-n 64 --k-block-size 64 \
+  --warmup 10 --iterations 20 --repeats 2 \
+  --output results/main_experiments_30m_v2/benchmarks/matmul_benchmark.csv \
+  --invariance-output results/main_experiments_30m_v2/determinism/matmul_invariance.csv
+```
+
+这里的 `fixed_tile` Linear 使用固定 2D output tile 和固定 K-block 遍历顺序，模拟
+官方路线中避免 Split-K/Stream-K 的 data-parallel matmul strategy。它用于验证
+batch invariance，不是加速 GEMM。
+
 模型级 native/fixed-tree RMSNorm 对照：
 
 ```bash
@@ -265,6 +316,27 @@ python -m src.determinism.batch_sensitivity \
   --norm-backends native,fixed_tree \
   --output results/main_experiments_30m_v2/determinism/batch_sensitivity.csv
 ```
+
+全 fixed reference 模型级 smoke：
+
+```bash
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+python -m src.determinism.batch_sensitivity \
+  --checkpoint results/train_30m/best_checkpoint.pt \
+  --target "Once upon a time" \
+  --backends flash_attn_2_bi \
+  --attention-fixed-split-size 64 \
+  --norm-backends fixed_tree \
+  --linear-backends fixed_tile \
+  --linear-tile-m 16 --linear-tile-n 64 --linear-k-block-size 64 \
+  --dtypes float32 \
+  --max-new-tokens 1 \
+  --output results/main_experiments_30m_v2/determinism/batch_invariant_model_smoke.csv
+```
+
+该 smoke 只验证训练好的 TinyLM checkpoint 能在 full fixed reference 路径上运行，并
+检查同一 prompt 混入不同 batch composition 后目标 logits 和 1-token greedy 输出是否
+保持一致。它不是 throughput benchmark。
 
 低 margin prompt 和 128-token greedy 分叉搜索：
 
@@ -315,9 +387,11 @@ python -m src.analysis.plot_results \
 3. eager、SDPA、FlashAttention-2 三轮 attention benchmark；
 4. `flash_attn_2_bi` attention batch invariance 检查；
 5. native/fixed-tree RMSNorm benchmark 和算子一致性；
-6. RMSNorm 与 attention backend 的模型级 batch sensitivity；
-7. 低 margin prompt 排名和 greedy 分叉搜索；
-8. 浮点归约、模型规模检查和自动绘图。
+6. native/fixed-tile Matmul/Linear benchmark 和算子一致性；
+7. RMSNorm 与 attention backend 的模型级 batch sensitivity；
+8. full fixed reference 模型级 smoke；
+9. 低 margin prompt 排名和 greedy 分叉搜索；
+10. 浮点归约、模型规模检查和自动绘图。
 
 核心对照分三层：
 
@@ -339,16 +413,18 @@ python -m src.analysis.plot_results \
 | 模型级 fixed-tree RMSNorm | `src/model/transformer.py` | 已实现，固定 hidden 维归约顺序 |
 | RMSNorm 性能与算子一致性 | `src/bench/rmsnorm_benchmark.py` | 已实现 |
 | batch-invariant attention | `src/model/transformer.py` | 已实现 PyTorch 参考后端 `flash_attn_2_bi`，固定 KV split size 与 online-softmax 归约顺序 |
+| batch-invariant Matmul/Linear | `src/model/transformer.py` | 已实现 `BatchInvariantLinear(backend="fixed_tile")`，固定 2D output tile 和 K-block 顺序 |
+| Matmul 性能与算子一致性 | `src/bench/matmul_benchmark.py` | 已实现，输出 `matmul_latency.png` 和 `matmul_invariance.png` |
 | Attention batch invariance 图 | `src/analysis/plot_results.py` | 已实现，输出 `attention_invariance.png` |
 | 不同浮点归约顺序产生数值漂移 | `src/toy/reduction_order.py` | 已实现，属于机制级 toy experiment |
 | 固定归约树跨 block size 保持相同结果 | `src/toy/batch_invariant_reduction.py` | 已实现 |
 | Qwen3-8B 或 TinyLlama 1.1B 的 1000 次请求 | 无 | 未实现 |
 | vLLM continuous batching 复现 | 无 | 未实现 |
-| batch-invariant Matmul/Linear | 无 | 按当前要求留到后续 |
 
 因此，当前结果可以支持“batch composition 会造成 logits 数值漂移”、
-“固定 RMSNorm 归约树和 attention KV split / online-softmax 归约顺序是可行方向”，
-但因为 Matmul/Linear 尚未替换，不能宣称已经恢复端到端 Batch Invariance。
+“固定 RMSNorm、Linear/Matmul 和 attention KV split / online-softmax 归约顺序是可行方向”。
+需要注意的是，当前 fixed-tile Linear 和 `flash_attn_2_bi` 是 PyTorch 参考实现，不是
+高性能 CUDA/Triton kernel；加速结论仍主要来自 SDPA 和官方 FlashAttention-2。
 
 FlashAttention-2、CUDA 或某种 dtype 不可用时，实验写入 `skipped/error` 和原因，
 不会伪造测量值。Attention benchmark 是算子级 microbenchmark，不代表完整 serving
@@ -368,12 +444,12 @@ src/model/        decoder-only Transformer
 src/train/        训练、验证、恢复和 checkpoint
 src/infer/        单条及固定 prompts 生成
 src/eval/         WikiText 域外 PPL
-src/bench/        attention 与模型规模实验
+src/bench/        attention、RMSNorm、Matmul 与模型规模实验
 src/determinism/  batch composition 敏感性
 src/toy/          浮点归约实验
 src/analysis/     CSV/JSON 自动绘图
 reports/          任务书、实验记录和报告模板
-results/          被 Git 忽略的实验产物
+results/          正式 CSV/JSON/PNG 发布，checkpoint 和日志忽略
 ```
 
 任务安排见 `reports/task_book.md`，报告模板见 `reports/final_report.md`。
@@ -381,8 +457,9 @@ results/          被 Git 忽略的实验产物
 ## 验证
 
 ```bash
-python -m pytest
-python -m compileall -q src tests
+conda run -n nlp-project python -m pytest -q
+conda run -n nlp-project python -m ruff check src tests
+git diff --check
 ```
 
 当前实现包含实验用增量 KV cache，但不包含 SGLang/vLLM serving、paged KV cache、

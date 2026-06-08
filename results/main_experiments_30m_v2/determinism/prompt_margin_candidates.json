@@ -1,0 +1,17 @@
+{
+  "checkpoint": "results/train_30m/best_checkpoint.pt",
+  "documents_requested": 2000,
+  "documents_loaded": 2000,
+  "prefix_lengths": [
+    8,
+    16,
+    32,
+    64,
+    128
+  ],
+  "candidate_count": 8155,
+  "kept": 100,
+  "minimum_margin": 0.0,
+  "seed": 42,
+  "ranking_dtype": "float16"
+}

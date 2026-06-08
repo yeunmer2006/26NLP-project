@@ -434,6 +434,21 @@ def main() -> None:
         flash_reason,
     )
     save_csv(invariance, args.invariance_output)
+    invariance_ok = [row for row in invariance if row["status"] == "ok"]
+    save_json(
+        {
+            "fixed_split_size": args.fixed_split_size,
+            "single_batch_size": 1,
+            "mixed_batch_size": max([2, *args.batch_sizes]),
+            "all_batch_invariant_backend_cases_bitwise_equal": all(
+                row["bitwise_equal"]
+                for row in invariance_ok
+                if row["backend"] == "flash_attn_2_bi"
+            ),
+            "cases": invariance,
+        },
+        args.invariance_output.rsplit(".", 1)[0] + ".json",
+    )
     means = {
         (row["workload"], row["backend"], row["batch_size"], row["seq_len"]):
         row["mean_latency_ms"]
