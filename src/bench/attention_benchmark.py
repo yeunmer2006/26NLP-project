@@ -95,9 +95,13 @@ def sdpa_attention(
     if not causal or query.shape[-2] == key.shape[-2]:
         return F.scaled_dot_product_attention(query, key, value, is_causal=causal)
     allowed = bottom_right_causal_mask(query.shape[-2], key.shape[-2], query.device)
-    return F.scaled_dot_product_attention(
+    output = F.scaled_dot_product_attention(
         query, key, value, attn_mask=allowed[None, None, :, :]
     )
+    fully_masked_rows = ~allowed.any(dim=-1)
+    if fully_masked_rows.any():
+        output = output.masked_fill(fully_masked_rows[None, None, :, None], 0.0)
+    return output
 
 
 def batch_invariant_attention(
