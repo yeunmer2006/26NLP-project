@@ -369,6 +369,26 @@ Python fixed-order 参考路径。
 `results/main_experiments_30m_v2/figures/manifest.json`。这些图片和证据数据随代码
 提交到 GitHub；约 411 MB 的 checkpoint、运行日志和开发期临时结果继续只保存在本机。
 
+### 7.2 Batch Invariance 与 On-Policy RL
+
+Batch invariance 在 LLM 推理稳定性之外还有一个直接的下游应用：on-policy 强化学习
+训练 [5]。PPO、GRPO 等算法要求采样轨迹严格属于当前 policy。常见工程做法是用高吞吐
+inference backend（如 vLLM）做 rollout 采样，再用 training backend（FSDP /
+DeepSpeed 等）对同一份权重做参数更新。两条路径上的 kernel 实现、batching 策略和
+归约顺序通常不一致，导致 sampler 输出的 logits 与 trainer 用同一份权重重新前向得到的
+logits 出现数值差异；当差异跨过低 margin 决策边界时，sampled token 在 trainer
+视角下的概率不再等于 sampler 视角下的概率，on-policy 假设被破坏，训练实际退化为
+off-policy。这时必须引入 importance sampling 权重
+`pi_train(a|s) / pi_sample(a|s)` 来修正，否则梯度估计有偏，并且 KL 漂移会持续累积。
+
+本项目的 `fixed_tree` RMSNorm、`fixed_tile` Linear 和 `flash_attn_2_bi` attention
+为 sampler 与 trainer 之间的数值一致性提供了机制基础：只要两条路径都走同一份
+fixed-order reduction，无论 batch composition 如何变化，目标 token 的 logits 都
+保持 bitwise 一致，importance ratio 严格为 1。把这套 PyTorch 参考路径替换成高性能
+batch-invariant kernel 之后，就有条件在不依赖 importance sampling 修正的前提下做
+true on-policy PPO / GRPO 训练。当前报告只在推理侧验证了模型级 smoke test 一致，
+RL 训练侧的端到端验证留作后续工作（见第 9 节）。
+
 ## 8. 当前完成度
 
 | 主线任务 | 状态 | 判断 |
@@ -393,13 +413,21 @@ Python fixed-order 参考路径。
 
 当前课程项目主线已经闭环。继续扩展时，应优先做三件事：
 
-1. **把 fixed-tile Linear/Matmul 换成高性能 kernel。** 当前实现是 PyTorch 参考路径，
-   能证明固定归约顺序，但不能作为加速 GEMM。后续应接入 Triton/DeepGEMM 风格的
-   batch-invariant matmul，并比较吞吐与显存。
+1. **将 PyTorch 参考实现迁移到 CUDA 高性能 kernel。** 当前 `fixed_tile_matmul`、
+   `flash_attn_2_bi` 与 `fixed_tree_rmsnorm` 都是 PyTorch 算子级参考实现，能证明
+   fixed-order 归约的数值一致性，但不能作为加速路径。后续应在 CUDA 层面提供
+   真正可上生产的高性能实现：优先用 Triton 或 CUTLASS 重写 fixed-order
+   batch-invariant GEMM，再写一个 deterministic flash-attention CUDA kernel
+   （按 batch 内最长序列做 tile 切分、固定 K/V reduction tree），最后把
+   `BatchInvariantLinear` 与 attention 串成端到端的 CUDA graph 路径，并在
+   TensorCore 上对吞吐和显存做 benchmark，与 PyTorch 参考路径做一致性回归。
 2. **接入真实 serving 场景。** 用 vLLM 或自定义 continuous batching 复现动态批处理，
    对比静态 batch 与 paged KV cache 下的输出唯一性。
 3. **扩大模型与硬件。** 在 TinyLlama 1.1B 或 Qwen3-8B 上验证输出分叉和性能代价，
    并与 A100/H100 等数据中心 GPU 上的 FlashAttention-2 表现区分讨论。
+4. **小规模 on-policy RL 验证。** 在 batch-invariant CUDA/Triton kernel 上对训练好的
+   TinyLM 做 PPO 或 GRPO 微调，验证 sampler 与 trainer 之间 KL 漂移消失、
+   importance ratio 严格为 1 [5]。
 
 ## 10. 局限性
 
@@ -427,33 +455,6 @@ KV split 和 online-softmax 归约顺序，`BatchInvariantLinear` 也已覆盖 p
 和 LM head 中的 fixed-tile 矩阵乘。当前版本能在训练好的 TinyLM checkpoint 上跑通全 fixed-order
 batch-invariant smoke test，但加速仍主要来自官方 FlashAttention-2/SDPA 等高性能后端。
 
-## 12. PPT 讲解提纲
-
-建议按 8 页组织：
-
-1. **问题与范围**：30M TinyLlama-style 训练、attention 加速、batch invariance；
-   强调不是复现 TinyLlama 1.1B 的完整训练。
-2. **模型与训练**：展示 RMSNorm、RoPE、GQA、SwiGLU 和训练曲线，给出
-   34.26M 参数、5000 万 tokens、validation PPL 6.5866。
-3. **FA2 论文原理**：用三句话讲“减少非 matmul FLOPs、跨 thread blocks 并行、
-   warp 工作重分配”，引用论文 [2]。
-4. **我如何对齐官方代码**：展示官方 `flash_attn_func` 的 QKV 布局、GQA 和 causal
-   mask 规则，再指向本项目 benchmark 与测试 [3][4]。
-5. **性能结果**：展示 FA2 prefill 平均 3.44x vs eager、0.76x vs SDPA，以及最大
-   prefill shape 才超过 SDPA；强调这是本机 RTX 4060 前向 microbenchmark。
-6. **确定性现象**：展示固定 prompt 只有 logits 漂移，再展示低 margin 搜索找到
-   56 个 greedy 分叉。
-7. **修复尝试**：展示 fixed-tree RMSNorm、`flash_attn_2_bi` attention 和
-   `BatchInvariantLinear`，配合 `attention_invariance.png`、`matmul_invariance.png`
-   说明三类关键 reduction 都已有参考实现。
-8. **结论与下一步**：主线已闭环；下一步是高性能 batch-invariant GEMM、serving 和更大模型扩展。
-
-讲 FA2 时可以直接使用以下表述：
-
-> 我没有自行仿写论文 CUDA kernel，而是调用作者官方 2.8.3 实现，并对输入布局、
-> GQA head 映射、缩放和不等长序列 causal mask 逐项建立 reference test。正式结果显示
-> FA2 在本机 prefill 上明显快于 eager，但平均没有超过 SDPA，只有最大 shape
-> 获得 1.12 倍 SDPA 加速；这说明本机实测不能照搬论文的 A100 训练吞吐。
 
 ## 参考资料
 

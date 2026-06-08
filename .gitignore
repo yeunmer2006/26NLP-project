@@ -41,3 +41,4 @@ results/train_30m/*
 !results/train_30m/training_summary.json
 .claude/
 tmp/
+projects/
