@@ -48,6 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target", default="The capital of France is")
     parser.add_argument("--prompts-file")
     parser.add_argument("--backends", default="eager,sdpa")
+    parser.add_argument("--attention-fixed-split-size", type=int, default=64)
     parser.add_argument("--dtypes", default="float32,float16")
     parser.add_argument("--norm-backends", default="native,fixed_tree")
     parser.add_argument("--max-new-tokens", type=int, default=32)
@@ -181,10 +182,12 @@ def main() -> None:
         for backend in args.backends.split(","):
             model, tokenizer = load_model_and_tokenizer(args.checkpoint, device)
             model.config.attention_backend = backend
+            model.config.attention_fixed_split_size = args.attention_fixed_split_size
             model.config.rms_norm_backend = norm_backend
             model.norm.backend = norm_backend
             for layer in model.layers:
                 layer.attention.backend = backend
+                layer.attention.fixed_split_size = args.attention_fixed_split_size
                 layer.input_norm.backend = norm_backend
                 layer.post_attention_norm.backend = norm_backend
             for dtype in args.dtypes.split(","):
@@ -218,6 +221,9 @@ def main() -> None:
                             rows.append({
                                 "prompt": target,
                                 "backend": backend,
+                                "attention_fixed_split_size": (
+                                    args.attention_fixed_split_size
+                                ),
                                 "dtype": dtype,
                                 "norm_backend": norm_backend,
                                 "composition": name,

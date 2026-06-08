@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from src.bench.attention_benchmark import (
+    batch_invariant_attention,
     bottom_right_causal_mask,
     eager_attention,
     sdpa_attention,
@@ -44,6 +45,33 @@ def test_gqa_eager_and_sdpa_match() -> None:
     eager = eager_attention(query, key, value, causal=True)
     sdpa = sdpa_attention(query, key, value, causal=True)
     torch.testing.assert_close(eager, sdpa, rtol=1e-5, atol=1e-6)
+
+
+def test_batch_invariant_attention_matches_sdpa() -> None:
+    torch.manual_seed(0)
+    query = torch.randn(2, 4, 3, 8)
+    key = torch.randn(2, 2, 5, 8)
+    value = torch.randn(2, 2, 5, 8)
+    candidate = batch_invariant_attention(query, key, value, causal=True)
+    reference = sdpa_attention(query, key, value, causal=True)
+    torch.testing.assert_close(candidate, reference, rtol=1e-5, atol=1e-6)
+
+
+def test_batch_invariant_attention_is_batch_invariant() -> None:
+    torch.manual_seed(0)
+    single_query = torch.randn(1, 4, 3, 8)
+    single_key = torch.randn(1, 2, 5, 8)
+    single_value = torch.randn(1, 2, 5, 8)
+    mixed_query = torch.randn(4, 4, 3, 8)
+    mixed_key = torch.randn(4, 2, 5, 8)
+    mixed_value = torch.randn(4, 2, 5, 8)
+    mixed_query[0] = single_query[0]
+    mixed_key[0] = single_key[0]
+    mixed_value[0] = single_value[0]
+
+    single = batch_invariant_attention(single_query, single_key, single_value, causal=True)
+    mixed = batch_invariant_attention(mixed_query, mixed_key, mixed_value, causal=True)[0:1]
+    assert torch.equal(single, mixed)
 
 
 def test_fully_masked_causal_rows_match_sdpa_zero_output() -> None:

@@ -19,6 +19,109 @@ def fixed_tree_sum_last_dim(values: torch.Tensor) -> torch.Tensor:
     return values
 
 
+def fixed_tree_max_last_dim(values: torch.Tensor) -> torch.Tensor:
+    width = values.shape[-1]
+    padded_width = 1 << (width - 1).bit_length()
+    if padded_width != width:
+        values = F.pad(values, (0, padded_width - width), value=-torch.inf)
+    while values.shape[-1] > 1:
+        values = torch.maximum(values[..., 0::2], values[..., 1::2])
+    return values
+
+
+def flash_attention_2_batch_invariant(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    *,
+    attention_mask: torch.Tensor | None = None,
+    past_len: int = 0,
+    block_size: int = 64,
+    causal: bool = True,
+) -> torch.Tensor:
+    """FlashAttention-2-style online attention with fixed per-row reductions.
+
+    This reference path is intentionally slow: it fixes the traversal order over
+    batch, heads, query positions, key blocks, and reduction trees so the result
+    for one sequence does not depend on the other sequences in the batch.
+    """
+    if key.shape[1] != query.shape[1] or value.shape[1] != query.shape[1]:
+        raise ValueError("key/value heads must already match query heads")
+    if key.shape != value.shape:
+        raise ValueError("key and value must have the same shape")
+    if block_size <= 0:
+        raise ValueError("block_size must be positive")
+
+    batch_size, num_heads, query_len, head_dim = query.shape
+    key_len = key.shape[-2]
+    output = torch.zeros_like(query)
+    scale = head_dim ** -0.5
+    key_positions = torch.arange(key_len, device=query.device)
+    query_positions = torch.arange(
+        past_len, past_len + query_len, device=query.device
+    )
+
+    for batch_index in range(batch_size):
+        valid_keys = torch.ones(key_len, dtype=torch.bool, device=query.device)
+        if attention_mask is not None:
+            valid_keys = attention_mask[batch_index].bool()
+        allowed = valid_keys[None, :].expand(query_len, -1)
+        if causal:
+            allowed = allowed & (key_positions[None, :] <= query_positions[:, None])
+
+        query_sample = query[batch_index].float()
+        running_max = torch.full(
+            (num_heads, query_len, 1),
+            -torch.inf,
+            dtype=torch.float32,
+            device=query.device,
+        )
+        running_sum = torch.zeros_like(running_max)
+        accumulator = torch.zeros(
+            (num_heads, query_len, head_dim),
+            dtype=torch.float32,
+            device=query.device,
+        )
+
+        for block_start in range(0, key_len, block_size):
+            block_end = min(block_start + block_size, key_len)
+            block_allowed = allowed[:, block_start:block_end]
+            key_block = key[batch_index, :, block_start:block_end].float()
+            value_block = value[batch_index, :, block_start:block_end].float()
+            products = query_sample[:, :, None, :] * key_block[:, None, :, :]
+            scores = fixed_tree_sum_last_dim(products).squeeze(-1) * scale
+            scores = scores.masked_fill(~block_allowed[None, :, :], -torch.inf)
+
+            block_max = fixed_tree_max_last_dim(scores)
+            new_max = torch.maximum(running_max, block_max)
+            old_scale = torch.where(
+                torch.isfinite(running_max),
+                torch.exp(running_max - new_max),
+                torch.zeros_like(running_max),
+            )
+            probabilities = torch.where(
+                block_allowed[None, :, :],
+                torch.exp(scores - new_max),
+                torch.zeros_like(scores),
+            )
+            block_sum = fixed_tree_sum_last_dim(probabilities)
+            weighted_values = probabilities[..., None] * value_block[:, None, :, :]
+            block_accumulator = fixed_tree_sum_last_dim(
+                weighted_values.transpose(-1, -2)
+            ).squeeze(-1)
+            accumulator = accumulator * old_scale + block_accumulator
+            running_sum = running_sum * old_scale + block_sum
+            running_max = new_max
+
+        normalized = torch.zeros_like(accumulator)
+        valid_queries = running_sum.squeeze(-1) > 0
+        normalized[valid_queries] = (
+            accumulator[valid_queries] / running_sum.expand_as(accumulator)[valid_queries]
+        )
+        output[batch_index] = normalized.to(query.dtype)
+    return output
+
+
 class RMSNorm(nn.Module):
     def __init__(self, hidden_size: int, eps: float, backend: str = "native") -> None:
         super().__init__()
@@ -82,6 +185,7 @@ class CausalSelfAttention(nn.Module):
         self.kv_repeats = self.num_heads // self.num_kv_heads
         self.backend = config.attention_backend
         self.dropout = config.attention_dropout
+        self.fixed_split_size = config.attention_fixed_split_size
 
         self.q_proj = nn.Linear(config.hidden_size, self.num_heads * self.head_dim, bias=False)
         self.k_proj = nn.Linear(config.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
@@ -126,6 +230,17 @@ class CausalSelfAttention(nn.Module):
 
         if self.backend == "sdpa":
             output = self._sdpa(query, key, value, attention_mask, past_len)
+        elif self.backend == "flash_attn_2_bi":
+            if self.training and self.dropout:
+                raise ValueError("flash_attn_2_bi does not support attention dropout")
+            output = flash_attention_2_batch_invariant(
+                query,
+                key,
+                value,
+                attention_mask=attention_mask,
+                past_len=past_len,
+                block_size=self.fixed_split_size,
+            )
         else:
             output = self._eager(query, key, value, attention_mask, past_len)
 

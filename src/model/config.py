@@ -18,6 +18,7 @@ class ModelConfig:
     rms_norm_eps: float = 1e-5
     attention_dropout: float = 0.0
     attention_backend: str = "sdpa"
+    attention_fixed_split_size: int = 64
     rms_norm_backend: str = "native"
     tie_word_embeddings: bool = True
 
@@ -28,8 +29,12 @@ class ModelConfig:
             raise ValueError("num_attention_heads must be divisible by num_key_value_heads")
         if (self.hidden_size // self.num_attention_heads) % 2 != 0:
             raise ValueError("attention head dimension must be even for RoPE")
-        if self.attention_backend not in {"eager", "sdpa"}:
-            raise ValueError("attention_backend must be 'eager' or 'sdpa'")
+        if self.attention_backend not in {"eager", "sdpa", "flash_attn_2_bi"}:
+            raise ValueError(
+                "attention_backend must be 'eager', 'sdpa', or 'flash_attn_2_bi'"
+            )
+        if self.attention_fixed_split_size <= 0:
+            raise ValueError("attention_fixed_split_size must be positive")
         if self.rms_norm_backend not in {"native", "fixed_tree"}:
             raise ValueError("rms_norm_backend must be 'native' or 'fixed_tree'")
 

@@ -24,8 +24,9 @@ mkdir -p \
 "$python_bin" -m src.bench.attention_benchmark \
   --batch-sizes 1,4,8 --seq-lens 128,256,512 \
   --num-heads 8 --num-kv-heads 4 --head-dim 60 \
-  --warmup 20 --iterations 100 --repeats 3 \
-  --output "$output_dir/benchmarks/attention_benchmark.csv"
+  --fixed-split-size 64 --warmup 20 --iterations 100 --repeats 3 \
+  --output "$output_dir/benchmarks/attention_benchmark.csv" \
+  --invariance-output "$output_dir/determinism/attention_invariance.csv"
 "$python_bin" -m src.bench.rmsnorm_benchmark \
   --batch-sizes 1,4,8 --seq-lens 128,256,512 \
   --hidden-size 480 --warmup 20 --iterations 100 --repeats 3 \
@@ -33,6 +34,8 @@ mkdir -p \
   --invariance-output "$output_dir/determinism/rmsnorm_invariance.csv"
 "$python_bin" -m src.determinism.batch_sensitivity \
   --checkpoint "$checkpoint" \
+  --backends eager,sdpa,flash_attn_2_bi \
+  --attention-fixed-split-size 64 \
   --norm-backends native,fixed_tree \
   --output "$output_dir/determinism/batch_sensitivity.csv"
 "$python_bin" -m src.determinism.divergence_search \

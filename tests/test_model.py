@@ -42,6 +42,26 @@ def test_padding_does_not_shift_target_positions() -> None:
     torch.testing.assert_close(single, batched, rtol=1e-5, atol=1e-6)
 
 
+def test_flash_attention_2_bi_backend_is_batch_invariant() -> None:
+    torch.manual_seed(0)
+    config = ModelConfig(
+        hidden_size=32,
+        intermediate_size=64,
+        num_hidden_layers=1,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        max_position_embeddings=16,
+        attention_backend="flash_attn_2_bi",
+        rms_norm_backend="fixed_tree",
+    )
+    model = TinyLlama(config).eval()
+    target = torch.tensor([[1, 10, 11]])
+    mixed = torch.tensor([[1, 10, 11], [1, 20, 21], [1, 22, 23]])
+    single_logits = model(target)["logits"][0, -1]
+    mixed_logits = model(mixed)["logits"][0, -1]
+    assert torch.equal(single_logits, mixed_logits)
+
+
 def test_vocab_size_can_be_overridden_from_tokenizer() -> None:
     config = ModelConfig(vocab_size=8000, hidden_size=32, intermediate_size=64,
                          num_hidden_layers=1, num_attention_heads=4,

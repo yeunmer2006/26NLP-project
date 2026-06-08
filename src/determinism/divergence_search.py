@@ -28,12 +28,19 @@ def precision_context(device: torch.device, dtype: str):
     return torch.autocast(device_type=device.type, dtype=getattr(torch, dtype))
 
 
-def configure_model(model, attention_backend: str, norm_backend: str) -> None:
+def configure_model(
+    model,
+    attention_backend: str,
+    norm_backend: str,
+    attention_fixed_split_size: int = 64,
+) -> None:
     model.config.attention_backend = attention_backend
+    model.config.attention_fixed_split_size = attention_fixed_split_size
     model.config.rms_norm_backend = norm_backend
     model.norm.backend = norm_backend
     for layer in model.layers:
         layer.attention.backend = attention_backend
+        layer.attention.fixed_split_size = attention_fixed_split_size
         layer.input_norm.backend = norm_backend
         layer.post_attention_norm.backend = norm_backend
 
@@ -129,6 +136,7 @@ def main() -> None:
     parser.add_argument("--keep", type=int, default=100)
     parser.add_argument("--ranking-batch-size", type=int, default=32)
     parser.add_argument("--backends", default="eager,sdpa")
+    parser.add_argument("--attention-fixed-split-size", type=int, default=64)
     parser.add_argument("--dtypes", default="float32,float16")
     parser.add_argument("--norm-backends", default="native")
     parser.add_argument("--max-new-tokens", type=int, default=128)
@@ -144,7 +152,7 @@ def main() -> None:
     device = resolve_device(args.device)
     model, tokenizer = load_model_and_tokenizer(args.checkpoint, device)
     documents = sampled_documents(Path(args.validation_jsonl), args.documents, args.seed)
-    configure_model(model, "sdpa", "native")
+    configure_model(model, "sdpa", "native", args.attention_fixed_split_size)
     ranking_dtype = "float16" if device.type == "cuda" else "float32"
     with precision_context(device, ranking_dtype):
         candidates, candidate_count = rank_candidates(
@@ -173,7 +181,12 @@ def main() -> None:
     details = {}
     for norm_backend in args.norm_backends.split(","):
         for attention_backend in args.backends.split(","):
-            configure_model(model, attention_backend, norm_backend)
+            configure_model(
+                model,
+                attention_backend,
+                norm_backend,
+                args.attention_fixed_split_size,
+            )
             for dtype in args.dtypes.split(","):
                 if device.type == "cpu" and dtype == "float16":
                     continue
@@ -216,6 +229,9 @@ def main() -> None:
                                 "prefix_length": candidate["prefix_length"],
                                 "baseline_margin": candidate["margin"],
                                 "attention_backend": attention_backend,
+                                "attention_fixed_split_size": (
+                                    args.attention_fixed_split_size
+                                ),
                                 "norm_backend": norm_backend,
                                 "dtype": dtype,
                                 "composition": composition,

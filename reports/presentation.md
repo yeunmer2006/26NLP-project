@@ -1,6 +1,6 @@
 ---
-title: "TinyLlama-style 小模型训练、FlashAttention-2 与 Batch Invariance"
-subtitle: "30M 级预训练复现、Attention 加速评估与确定性推理实验"
+title: "TinyLM 模型推理的批次不变性及其加速"
+subtitle: "RMSNorm、Attention 归约固定与 FlashAttention-2 性能评估"
 author: "NLP Project"
 date: "2026-06-07"
 ---
@@ -12,12 +12,12 @@ date: "2026-06-07"
 - 训练一个 TinyLlama-style decoder-only 小语言模型
 - 对比 eager attention、PyTorch SDPA 和官方 FlashAttention-2
 - 研究 batch size / batch composition 对 `temperature=0` 推理的影响
-- 用 fixed-tree reduction 验证 batch invariance 的机制性修复
+- 复现 fixed-tree RMSNorm 和 batch-invariant attention 的机制性修复
 
 **边界**
 
 - 不是复现 TinyLlama 1.1B 完整训练
-- 不是逐行重写 FlashAttention-2 CUDA kernel
+- Matmul / Linear 的 batch-invariant 版本留到后续
 - vLLM continuous batching 和更大模型是后续工作
 
 ::: notes
@@ -222,10 +222,13 @@ date: "2026-06-07"
 
 - 18 个 RMSNorm invariance case 全部 bitwise equal
 - fixed-tree RMSNorm 平均延迟是 native 的 2.13x
+- 新增 `flash_attn_2_bi`：固定 attention online-softmax 归约顺序
 - 但 Linear / Matmul 尚未替换，所以不能宣称整个模型 batch invariant
 
 ::: notes
-这里要说清楚“已解决”和“未解决”的边界。fixed-tree 证明了机制方向，但真正模型里 attention 和 MLP 的矩阵乘仍然会带来 batch dependence。
+这里要说清楚“已解决”和“未解决”的边界。fixed-tree RMSNorm 固定 hidden 维归约；
+`flash_attn_2_bi` 固定 KV split size 和 online-softmax 归约顺序；
+Linear / Matmul 尚未替换，所以还不能把完整模型说成 batch invariant。
 :::
 
 ---
@@ -238,7 +241,8 @@ date: "2026-06-07"
 - 官方 FlashAttention-2 已在主模型 GQA shape 上完成 benchmark
 - FA2 在 prefill 上有明确收益，decode 中与 SDPA 接近
 - batch composition 会造成 logits 漂移，低 margin prompt 下会导致 `temperature=0` greedy 分叉
-- fixed-tree reduction 是可行方向，但模型级完整 batch invariance 还没完成
+- fixed-tree RMSNorm 和 `flash_attn_2_bi` attention 已覆盖两个 reduction 风险点
+- Linear / Matmul 仍是下一步，端到端 batch invariance 还没完成
 
 **下一步**
 

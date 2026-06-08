@@ -1,8 +1,9 @@
-# TinyLlama-style Pretraining, FlashAttention-2, and Batch Invariance
+# TinyLM Inference Batch Invariance and Acceleration
 
-课程项目：复现 TinyLlama 架构族的小型语言模型预训练流程，评估
-FlashAttention-2 加速效果，并研究 batch size/composition 为什么会破坏
-`temperature=0` 推理的逐比特确定性。
+课程项目：先训练一个 TinyLlama-style 小语言模型，再在这个 TinyLM 上复现和评估
+模型推理的 batch invariance 方法及其加速效果。核心问题是：相同 prompt 在不同
+batch size / batch composition 下能否得到逐比特相同的 logits 和 greedy output，
+以及固定 kernel 归约策略会带来多少性能代价。
 
 模型实现包含 RMSNorm、RoPE、GQA、SwiGLU 和 causal LM objective。30M 配置是主实验，
 60M 只做短 token 预算对照，100M 只做参数量和单步显存可行性检查。
@@ -17,7 +18,7 @@ FlashAttention-2 加速效果，并研究 batch size/composition 为什么会破
 2. FlashAttention-2 相对 eager/SDPA 在不同 batch size 和 sequence length 下有多大
    延迟、吞吐和显存收益？
 3. 当目标 prompt 所在批次的大小和组成变化时，logits 与 greedy output 是否变化？
-4. 固定归约/矩阵乘法策略能否恢复 batch invariance，代价是多少？
+4. 固定 RMSNorm、attention 和后续 matmul 的归约策略能否恢复 batch invariance？
 
 `temperature=0` 只固定了 token 选择规则，并不保证底层算子产生逐比特相同的 logits。
 本项目检验的因果链是：
@@ -206,6 +207,7 @@ results/main_experiments_30m_v2/
 ├── determinism/prompt_margin_candidates.json
 ├── determinism/divergence_search.csv
 ├── determinism/divergence_search.json
+├── determinism/attention_invariance.csv
 ├── determinism/rmsnorm_invariance.csv
 ├── determinism/rmsnorm_invariance.json
 ├── toy/reduction_order.csv
@@ -225,8 +227,9 @@ FlashAttention-2、SDPA 和 eager：
 python -m src.bench.attention_benchmark \
   --batch-sizes 1,4,8 --seq-lens 128,256,512 \
   --num-heads 8 --num-kv-heads 4 --head-dim 60 \
-  --warmup 20 --iterations 100 --repeats 3 \
-  --output results/main_experiments_30m_v2/benchmarks/attention_benchmark.csv
+  --fixed-split-size 64 --warmup 20 --iterations 100 --repeats 3 \
+  --output results/main_experiments_30m_v2/benchmarks/attention_benchmark.csv \
+  --invariance-output results/main_experiments_30m_v2/determinism/attention_invariance.csv
 ```
 
 这里的 FlashAttention-2 路径直接调用 Dao-AILab 官方包的
@@ -234,6 +237,12 @@ python -m src.bench.attention_benchmark \
 并直接传入较少的 KV heads 来走官方 GQA 路径，不在仓库内重写 CUDA kernel。
 该命令是前向推理 microbenchmark；论文性能图使用 A100、固定总 token 数以及
 forward+backward，因此本项目结果只能用于本机推理对比，不能声称逐项复现论文吞吐。
+另外，仓库内新增了 `flash_attn_2_bi` 参考后端：它按 FlashAttention-2 的
+online softmax 形式固定 key block 和归约树顺序，用
+`--fixed-split-size` 固定 KV split size，并禁用依赖 batch shape 的动态 KV split。
+这对应参考资料中的 batch-invariant attention 思路。它是 PyTorch 参考实现，
+不是高性能 CUDA kernel；默认只进入 invariance 检查。如需显式测它的延迟，可把
+`--backends` 设为包含 `flash_attn_2_bi`。
 
 native 与 fixed-tree RMSNorm 性能和算子逐比特一致性：
 
@@ -251,6 +260,8 @@ python -m src.bench.rmsnorm_benchmark \
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 python -m src.determinism.batch_sensitivity \
   --checkpoint results/train_30m/best_checkpoint.pt \
+  --backends eager,sdpa,flash_attn_2_bi \
+  --attention-fixed-split-size 64 \
   --norm-backends native,fixed_tree \
   --output results/main_experiments_30m_v2/determinism/batch_sensitivity.csv
 ```
@@ -302,10 +313,11 @@ python -m src.analysis.plot_results \
 1. 10 个固定 prompt 的 greedy 与 temperature sampling；
 2. WikiText-2 Raw 域外 PPL；
 3. eager、SDPA、FlashAttention-2 三轮 attention benchmark；
-4. native/fixed-tree RMSNorm benchmark 和算子一致性；
-5. 两种 RMSNorm 的模型级 batch sensitivity；
-6. 低 margin prompt 排名和 greedy 分叉搜索；
-7. 浮点归约、模型规模检查和自动绘图。
+4. `flash_attn_2_bi` attention batch invariance 检查；
+5. native/fixed-tree RMSNorm benchmark 和算子一致性；
+6. RMSNorm 与 attention backend 的模型级 batch sensitivity；
+7. 低 margin prompt 排名和 greedy 分叉搜索；
+8. 浮点归约、模型规模检查和自动绘图。
 
 核心对照分三层：
 
@@ -326,15 +338,17 @@ python -m src.analysis.plot_results \
 | 低 margin prompt 与 greedy 分叉搜索 | `src/determinism/divergence_search.py` | 已完成，2000 cases 中找到 56 个 greedy 分叉 |
 | 模型级 fixed-tree RMSNorm | `src/model/transformer.py` | 已实现，固定 hidden 维归约顺序 |
 | RMSNorm 性能与算子一致性 | `src/bench/rmsnorm_benchmark.py` | 已实现 |
+| batch-invariant attention | `src/model/transformer.py` | 已实现 PyTorch 参考后端 `flash_attn_2_bi`，固定 KV split size 与 online-softmax 归约顺序 |
+| Attention batch invariance 图 | `src/analysis/plot_results.py` | 已实现，输出 `attention_invariance.png` |
 | 不同浮点归约顺序产生数值漂移 | `src/toy/reduction_order.py` | 已实现，属于机制级 toy experiment |
 | 固定归约树跨 block size 保持相同结果 | `src/toy/batch_invariant_reduction.py` | 已实现 |
 | Qwen3-8B 或 TinyLlama 1.1B 的 1000 次请求 | 无 | 未实现 |
 | vLLM continuous batching 复现 | 无 | 未实现 |
-| batch-invariant Matmul/Linear | 无 | 未实现 |
+| batch-invariant Matmul/Linear | 无 | 按当前要求留到后续 |
 
-因此，当前结果可以支持“batch composition 会造成 logits 数值漂移”和“固定归约顺序
-能够消除 toy reduction 的 block-size dependence”，但不能宣称已经在真实推理服务器
-中恢复端到端 Batch Invariance。
+因此，当前结果可以支持“batch composition 会造成 logits 数值漂移”、
+“固定 RMSNorm 归约树和 attention KV split / online-softmax 归约顺序是可行方向”，
+但因为 Matmul/Linear 尚未替换，不能宣称已经恢复端到端 Batch Invariance。
 
 FlashAttention-2、CUDA 或某种 dtype 不可用时，实验写入 `skipped/error` 和原因，
 不会伪造测量值。Attention benchmark 是算子级 microbenchmark，不代表完整 serving

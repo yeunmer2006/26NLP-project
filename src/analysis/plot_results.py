@@ -88,6 +88,49 @@ def main() -> None:
         plt.close(fig)
         generated.append(str(path))
 
+    attention_invariance_path = first_existing(
+        root, "determinism/attention_invariance.csv", "attention_invariance.csv"
+    )
+    attention_invariance = [
+        row for row in read_csv(attention_invariance_path)
+        if row.get("status") == "ok" and row.get("workload") == "prefill"
+    ]
+    if attention_invariance:
+        grouped = defaultdict(list)
+        equality = defaultdict(list)
+        for row in attention_invariance:
+            grouped[row["backend"]].append(float(row["max_abs_diff"]))
+            equality[row["backend"]].append(row.get("bitwise_equal") == "True")
+        labels = list(grouped)
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+        pass_rates = [
+            sum(equality[label]) / len(equality[label]) * 100.0
+            for label in labels
+        ]
+        axes[0].bar(labels, pass_rates)
+        axes[0].set(
+            xlabel="attention backend",
+            ylabel="bitwise equal cases (%)",
+            title="Attention invariance pass rate",
+            ylim=(0, 105),
+        )
+        max_diffs = [max(grouped[label]) for label in labels]
+        plotted_diffs = [max(value, 1e-12) for value in max_diffs]
+        axes[1].bar(labels, plotted_diffs)
+        axes[1].set_yscale("log")
+        axes[1].set(
+            xlabel="attention backend",
+            ylabel="max absolute difference",
+            title="Attention drift, prefill",
+        )
+        for axis in axes:
+            axis.tick_params(axis="x", rotation=20)
+        fig.tight_layout()
+        path = output / "attention_invariance.png"
+        fig.savefig(path, dpi=160)
+        plt.close(fig)
+        generated.append(str(path))
+
     rmsnorm_path = first_existing(
         root, "benchmarks/rmsnorm_benchmark.csv", "rmsnorm_benchmark.csv"
     )
