@@ -101,10 +101,40 @@ decode。每个 shape 预热 20 次、计时 100 次并重复 3 轮。
 
 ### 5.1 论文与官方代码依据
 
-FlashAttention-2 论文将标准 attention 定义为精确计算，而不是 attention
-近似；核心改进是减少非矩阵乘 FLOPs、沿 sequence length 在多个 thread blocks
-之间并行，以及调整 thread block 内 warp 的工作划分。论文在 A100 上报告其达到
-理论峰值的 50%-73%，并在 GPT 风格模型训练中达到最高 225 TFLOPs/s [2]。
+标准 scaled dot-product attention 可以写成：
+
+`Attention(Q, K, V) = softmax(QK^T / sqrt(d)) V`
+
+朴素实现通常会显式生成 attention score 矩阵和 softmax 结果。对 batch size 为
+`B`、head 数为 `H`、序列长度为 `N` 的 full attention 来说，中间矩阵规模是
+`B * H * N * N`。当 `N` 增大时，主要瓶颈不只是乘法次数，还包括把这些大矩阵在
+GPU high bandwidth memory 和 on-chip SRAM 之间来回读写。也就是说，attention
+常常受 memory traffic 限制，而不是单纯受矩阵乘算力限制。
+
+FlashAttention 系列的核心思路是 IO-aware attention：不把完整 `N x N` attention
+矩阵写回显存，而是把 Q/K/V 分块搬到片上存储，在 block 内完成 score、mask、
+softmax 归一化和乘 V 的计算，并用在线 softmax 维护每一行的最大值和归一化因子。
+这样可以精确得到与标准 attention 等价的结果，同时显著减少显存读写。这里的
+“精确”等价指算法仍在计算标准 attention 公式，不是低秩、稀疏或采样近似；实际
+数值仍会因为 FP16/BF16 和 kernel 计算顺序不同而存在小误差。
+
+FlashAttention-2 在 FlashAttention 的基础上进一步优化并行策略。论文的主要改进
+可以概括为三点：
+
+1. **减少非矩阵乘 FLOPs。** GPU Tensor Core 对矩阵乘非常快，但 rescale、mask、
+   bound check、softmax 归一化等非 matmul 操作相对昂贵。FA2 重排计算流程，减少
+   这类额外操作在总耗时中的比例。
+2. **沿 sequence length 增加并行度。** 原始实现主要按 batch 和 head 并行；当
+   batch/head 数不够大时，GPU occupancy 不足。FA2 允许把同一个 head 的 sequence
+   维度切到多个 thread blocks 上，提高长序列和小 batch 场景下的并行度。
+3. **改进 warp 级工作划分。** FA2 调整 thread block 内不同 warp 的分工，减少
+   warp 之间通过 shared memory 同步和交换中间结果的开销，让更多时间花在矩阵乘
+   本身。
+
+论文在 A100 上报告 FlashAttention-2 达到理论峰值的 50%-73%，并在 GPT 风格模型
+训练中达到最高 225 TFLOPs/s [2]。这个数字用于说明论文实现的上限和动机，但不能
+直接当作本项目 RTX 4060 Laptop GPU 上的预期结果，因为硬件、序列长度、训练/推理
+方向和 benchmark 范围都不同。
 
 本项目没有重新实现论文中的 CUDA/CUTLASS kernel，而是直接调用 Dao-AILab 官方
 `flash-attn` 2.8.3 包 [3]。官方接口规定：
@@ -122,7 +152,32 @@ FlashAttention-2 论文将标准 attention 定义为精确计算，而不是 att
 代码中的 SDPA/eager reference 已按同一右下对齐 causal 语义实现，并增加了
 GQA、decode 和全 mask 行测试。
 
-### 5.2 正式结果
+这一点很重要：本项目评估的是“论文作者官方实现作为第三方高性能 kernel 接入后，
+在本机和本模型 shape 下带来的收益”，不是重新设计一个新的 attention kernel。实现
+工作集中在三件事：第一，保证 Q/K/V reshape 后符合官方接口；第二，让 eager 和
+SDPA reference 使用同样的 GQA head 映射、scale 和 causal mask；第三，用测试覆盖
+prefill、decode、GQA 和不等长 causal mask，避免把接口语义错误误判为性能或数值
+差异。
+
+### 5.2 Prefill 与 Decode 的差异
+
+本项目把 attention benchmark 分成两类 workload：
+
+- **Prefill**：一次性处理完整 prompt，query length 和 key length 都等于当前序列
+  长度。此时 attention score 是近似 `N x N` 的三角 causal 矩阵，显存访问量和
+  softmax 计算量都随序列长度快速增长。
+- **Decode**：KV cache 已经存在，每一步只为 1 个新 token 计算 query，query
+  length 为 1，key length 为历史上下文长度。此时计算更像 `1 x N` attention，
+  单次 kernel 的工作量小得多。
+
+因此，FA2 的收益通常更容易在 prefill 中体现：它避免写出完整 attention 矩阵，且
+有足够大的计算块摊薄 kernel launch、调度和数据搬运开销。Decode 阶段每次只处理
+一个 query，attention 本身的矩阵规模较小，整体耗时更容易被 kernel launch、KV
+cache 读取、后端调度和其他模型层开销影响。对于本项目这种 RTX 4060 Laptop GPU、
+`head_dim=60`、最大 sequence length 512 的前向 microbenchmark，decode 中 FA2
+与 PyTorch SDPA 接近是合理结果，并不否定 FA2 在长序列 prefill 或训练场景中的价值。
+
+### 5.3 正式结果
 
 `results/main_experiments_30m_v2/benchmarks/attention_benchmark.csv` 包含正式 GQA
 运行。所有 162 行均为 `ok`：3 个 backend × 2 个 workload × 3 个 batch size ×
@@ -152,12 +207,26 @@ GQA、decode 和全 mask 行测试。
 
 ![Attention latency](../results/main_experiments_30m_v2/figures/attention_latency.png)
 
-### 5.3 与论文复现的边界
+### 5.4 与论文复现的边界
 
 本实验是前向推理 microbenchmark，不是论文的 A100 forward+backward benchmark。
 它也不包含 QKV projection、完整模型、真实 paged KV cache、tokenizer 或 serving
 scheduler 开销。因此报告可以说“调用并验证了论文作者的官方 FA2 实现”，不能说
 “逐行复现了论文 CUDA kernel”或“复现了论文中的训练吞吐”。
+
+更具体地说，本项目可以支持以下结论：
+
+- 官方 FA2 2.8.3 能在本项目环境中正常运行；
+- 本项目的 Q/K/V layout、GQA 语义和 causal mask 规则已与官方接口对齐；
+- 在主模型 GQA shape 下，FA2 对 prefill 有稳定加速和显存优势；
+- 在本机 decode microbenchmark 中，FA2 与 SDPA 接近，优势不稳定。
+
+本项目不能支持以下结论：
+
+- 不能说自己复现了 FA2 论文的 CUDA/CUTLASS 内核实现；
+- 不能说复现了论文在 A100 上的 50%-73% 峰值利用率或 225 TFLOPs/s；
+- 不能把 attention 单算子加速直接等同于完整模型训练或 serving 吞吐提升；
+- 不能把 RTX 4060 Laptop GPU 上的短序列结果外推到 A100/H100 长序列训练。
 
 ## 6. Batch Size/Composition 敏感性
 
