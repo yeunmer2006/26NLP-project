@@ -1,5 +1,7 @@
 {
   "seed": 42,
   "device": "cpu",
-  "size": 4096
+  "size": 4096,
+  "input_scale": 0.0067644241528043705,
+  "fp16_safe_sum": 32752.0
 }

@@ -298,8 +298,10 @@ batch composition 下输出逐比特或逐 token 相同。
 
 浮点加法不满足结合律。`src/toy/reduction_order.py` 对同一组数使用 forward、
 reverse、blocked、random 和 fixed-tree 顺序求和。在 FP32 中，不同顺序相对 FP64
-reference 得到不同误差，fixed-tree 的本次绝对误差为 0.0199。FP16 输入因动态范围
-过大出现 `inf/nan`，因此该部分只能作为溢出案例，不能用于比较普通舍入误差。
+reference 得到不同误差。为避免 FP16 的动态范围掩盖普通舍入误差，实验根据输入的
+`sum(abs(x))` 对所有 dtype 使用同一个 overflow-safe 缩放系数，并在 FP64 中恢复
+原始尺度。每种 dtype 的误差基准是其已量化输入通过 `math.fsum` 得到的高精度和，
+因此排除了 dtype conversion error，图中只比较不同精度和归约顺序引入的累加误差。
 
 `src/toy/batch_invariant_reduction.py` 改变 block size 16/32/64/128/256：
 
@@ -358,12 +360,9 @@ Stream-K 这类会让归约策略随 batch shape 变化的路径。它覆盖了 
 
 ![Matmul invariance](../results/main_experiments_30m_v2/figures/matmul_invariance.png)
 
-在训练好的 30M checkpoint 上，用 `fixed_tree` RMSNorm、`fixed_tile` Linear 和
-`flash_attn_2_bi` attention 跑了一个模型级 smoke test：同一个 prompt 单独推理以及
-混入 batch size 2/4/8 的不同 composition 后，目标 logits 最大差异为 0，top-1/top-5
-和 1-token greedy 输出均保持一致。这说明当前代码路径已经能在 TinyLM 小模型上跑通
-batch-invariant 复现，但性能结论仍应依赖 native/SDPA/官方 FA2 加速路径，而不是这个
-Python fixed-order 参考路径。
+第 6.1 节的模型级 smoke test 进一步验证了三类 fixed-order 路径可以同时接入训练好
+的 30M checkpoint，并在覆盖的五种 batch composition 下得到相同输出。性能结论仍应
+依赖 native/SDPA/官方 FA2 加速路径，而不是这些 Python fixed-order 参考路径。
 
 九张报告图片及其源 CSV 的映射记录在
 `results/main_experiments_30m_v2/figures/manifest.json`。这些图片和证据数据随代码

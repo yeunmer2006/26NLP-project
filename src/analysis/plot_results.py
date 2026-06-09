@@ -291,7 +291,11 @@ def main() -> None:
         axis.bar(labels, errors)
         axis.set_yscale("log")
         axis.tick_params(axis="x", rotation=45)
-        axis.set(ylabel="absolute error (log)", title="Reduction-order error")
+        axis.set(
+            ylabel="absolute error (log)",
+            title="Reduction-order error",
+            xlabel="Error vs. the exact sum of each dtype's quantized input.",
+        )
         fig.tight_layout()
         path = output / "reduction_error.png"
         fig.savefig(path, dpi=160)
