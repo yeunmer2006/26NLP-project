@@ -1,11 +1,15 @@
 import argparse
+import csv
 
 from src.determinism.improved_model_validation import (
     DEFAULT_BATCH_SIZES,
+    FIXED_ORDER_VARIANT,
     GENERATION_COMPOSITIONS,
     LOGITS_COMPOSITIONS,
+    MODEL_VARIANTS,
     build_summary,
     completed_keys,
+    read_existing_rows,
     token_hash,
 )
 
@@ -23,6 +27,7 @@ def test_validation_composition_sets_are_fixed() -> None:
 def test_completed_keys_supports_resume() -> None:
     rows = [
         {
+            "model_variant": "native",
             "stage": "logits",
             "candidate_rank": "3",
             "composition": "C_seven_short",
@@ -35,7 +40,34 @@ def test_completed_keys_supports_resume() -> None:
             "status": "error",
         },
     ]
-    assert completed_keys(rows) == {("logits", 3, "C_seven_short")}
+    assert completed_keys(rows) == {
+        ("native", "logits", 3, "C_seven_short")
+    }
+
+
+def test_read_existing_rows_treats_legacy_rows_as_fixed_order(tmp_path) -> None:
+    output = tmp_path / "legacy.csv"
+    with output.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=("stage", "candidate_rank", "composition", "status"),
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "stage": "logits",
+                "candidate_rank": 1,
+                "composition": "A_target_only",
+                "status": "ok",
+            }
+        )
+
+    rows = read_existing_rows(output, resume=True)
+
+    assert rows[0]["model_variant"] == FIXED_ORDER_VARIANT
+    assert completed_keys(rows) == {
+        (FIXED_ORDER_VARIANT, "logits", 1, "A_target_only")
+    }
 
 
 def test_token_hash_is_stable() -> None:
@@ -44,16 +76,27 @@ def test_token_hash_is_stable() -> None:
 
 
 def test_build_summary_counts_results() -> None:
-    rows = [
+    rows = []
+    for model_variant in MODEL_VARIANTS:
+        for rank in range(1, 21):
+            for composition in LOGITS_COMPOSITIONS:
+                is_fixed = model_variant == FIXED_ORDER_VARIANT
+                rows.append(
+                    {
+                        "model_variant": model_variant,
+                        "stage": "logits",
+                        "candidate_rank": str(rank),
+                        "composition": composition,
+                        "status": "ok",
+                        "logits_bitwise_equal": str(is_fixed),
+                        "max_abs_diff": "0.0" if is_fixed else "0.001",
+                        "top1_changed": "False",
+                        "top5_changed": "False",
+                    }
+                )
+    rows.append(
         {
-            "stage": "logits",
-            "status": "ok",
-            "logits_bitwise_equal": "True",
-            "max_abs_diff": "0.0",
-            "top1_changed": "False",
-            "top5_changed": "False",
-        },
-        {
+            "model_variant": FIXED_ORDER_VARIANT,
             "stage": "generation",
             "status": "ok",
             "candidate_rank": "44",
@@ -65,7 +108,7 @@ def test_build_summary_counts_results() -> None:
             "output_identical": "True",
             "first_divergence_token": "",
         },
-    ]
+    )
     args = argparse.Namespace(
         checkpoint="checkpoint.pt",
         candidates_input="candidates.csv",
@@ -80,5 +123,22 @@ def test_build_summary_counts_results() -> None:
         max_new_tokens=8,
     )
     summary = build_summary(rows, args)
-    assert summary["logits_summary"]["bitwise_equal_cases"] == 1
+    assert summary["configuration"]["logits_positions"] == "last_valid_token_only"
+    assert summary["logits_comparison"]["native"] == {
+        "tested_cases": 60,
+        "bitwise_equal_cases": 0,
+        "nonzero_difference_cases": 60,
+        "top1_changed_cases": 0,
+        "top5_changed_cases": 0,
+        "maximum_absolute_difference": 0.001,
+    }
+    assert summary["logits_comparison"][FIXED_ORDER_VARIANT] == {
+        "tested_cases": 60,
+        "bitwise_equal_cases": 60,
+        "nonzero_difference_cases": 0,
+        "top1_changed_cases": 0,
+        "top5_changed_cases": 0,
+        "maximum_absolute_difference": 0.0,
+    }
+    assert summary["logits_summary"] == summary["logits_comparison"][FIXED_ORDER_VARIANT]
     assert summary["generation_summary"]["all_outputs_identical"]

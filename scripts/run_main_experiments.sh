@@ -69,6 +69,7 @@ mkdir -p \
   --logits-candidates 20 --generation-rank 44 --max-new-tokens 8 \
   --batch-sizes 1,2,4,8 \
   --linear-tile-m 16 --linear-tile-n 256 --linear-k-block-size 480 \
+  --resume \
   --output "$output_dir/determinism/improved_model_validation.csv"
 "$python_bin" -m src.toy.reduction_order \
   --repeats 10 \

@@ -295,7 +295,10 @@ def main() -> None:
     )
     improved = read_json(improved_path)
     if improved:
-        logits_summary = improved.get("logits_summary", {})
+        logits_summary = (
+            improved.get("logits_comparison", {}).get("fixed_order")
+            or improved.get("logits_summary", {})
+        )
         generation_cases = improved.get("generation_cases", [])
         batch_size_cases = improved.get("batch_size_cases", [])
         tested = int(logits_summary.get("tested_cases", 0))

@@ -29,7 +29,7 @@
 | `determinism/prompt_margin_candidates.*` | 低 top-1/top-2 margin 候选 prompt |
 | `determinism/divergence_search.*` | greedy generation 分叉搜索明细与摘要 |
 | `determinism/batch_invariant_model_smoke.*` | 三类 fixed-order 算子组合后的模型级 smoke test |
-| `determinism/improved_model_validation.*` | 轻量级改进模型 logits 与多 token batch-invariance 验证 |
+| `determinism/improved_model_validation.*` | 原生/改进模型同参数 logits 对照与改进模型多 token 验证 |
 | `evaluation/wikitext_perplexity.json` | WikiText-2 域外困惑度 |
 | `toy/reduction_order.*` | 不同浮点归约顺序的误差实验 |
 | `toy/batch_invariant_reduction.*` | block-dependent 与 fixed-tree 跨 block size 对照 |
