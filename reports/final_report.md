@@ -361,12 +361,12 @@ rank 44 prompt。比较每个 batch 第一行的完整 logits 和连续 8-token 
 
 
 
-| Batch size | Batch 内容 | Logits 逐比特相同 | 最大差异 | 8-token hash | 输出相同 |
-|---:|---|---|---:|---|---|
-| 1 | 同一 prompt × 1 | 是 | 0.0 | `5ced54c07fcc` | 是 |
-| 2 | 同一 prompt × 2 | 是 | 0.0 | `5ced54c07fcc` | 是 |
-| 4 | 同一 prompt × 4 | 是 | 0.0 | `5ced54c07fcc` | 是 |
-| 8 | 同一 prompt × 8 | 是 | 0.0 | `5ced54c07fcc` | 是 |
+| Batch size | Batch 内容 | 8-token hash | 输出相同 |
+|---|---|---|---|
+| 1 | 同一 prompt × 1  | `5ced54c07fcc` | 是 |
+| 2 | 同一 prompt × 2  | `5ced54c07fcc` | 是 |
+| 4 | 同一 prompt × 4  | `5ced54c07fcc` | 是 |
+| 8 | 同一 prompt × 8  | `5ced54c07fcc` | 是 |
 
 因此，在这个例子中只改变 batch size 从 1 到 2、4、8，不改变 prompt 内容，目标样本
 仍得到完全相同的 FP16 logits 和
