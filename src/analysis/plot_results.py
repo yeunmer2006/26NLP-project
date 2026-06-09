@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
+import textwrap
 from collections import defaultdict
 from pathlib import Path
 
@@ -21,6 +23,13 @@ def first_existing(root: Path, *relative_paths: str) -> Path:
         if path.exists():
             return path
     return root / relative_paths[0]
+
+
+def read_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    with path.open(encoding="utf-8") as handle:
+        return json.load(handle)
 
 
 def main() -> None:
@@ -278,6 +287,123 @@ def main() -> None:
         fig.savefig(path, dpi=160)
         plt.close(fig)
         record_figure(path, [sensitivity_path])
+
+    improved_path = first_existing(
+        root,
+        "determinism/improved_model_validation.json",
+        "improved_model_validation.json",
+    )
+    improved = read_json(improved_path)
+    if improved:
+        logits_summary = improved.get("logits_summary", {})
+        generation_cases = improved.get("generation_cases", [])
+        batch_size_cases = improved.get("batch_size_cases", [])
+        tested = int(logits_summary.get("tested_cases", 0))
+        equal = int(logits_summary.get("bitwise_equal_cases", 0))
+        nonzero = int(logits_summary.get("nonzero_difference_cases", 0))
+        pass_rate = 100.0 * equal / tested if tested else 0.0
+        maximum = logits_summary.get("maximum_absolute_difference")
+
+        fig = plt.figure(figsize=(14, 8))
+        grid = fig.add_gridspec(2, 1, height_ratios=[1, 2.4])
+        axis = fig.add_subplot(grid[0])
+        axis.bar(
+            ["Bitwise equal", "Nonzero difference"],
+            [pass_rate, 100.0 * nonzero / tested if tested else 0.0],
+            color=["#2a9d8f", "#e76f51"],
+        )
+        axis.set(
+            ylabel="cases (%)",
+            ylim=(0, 105),
+            title=(
+                "Improved model: FP16 fixed-order logits validation "
+                f"({equal}/{tested} bitwise equal, max diff={maximum})"
+            ),
+        )
+
+        table_axis = fig.add_subplot(grid[1])
+        table_axis.axis("off")
+        table_rows = []
+        displayed_cases = batch_size_cases or generation_cases
+        for case in displayed_cases:
+            token_ids = " ".join(str(token) for token in case["token_ids"])
+            if batch_size_cases:
+                table_rows.append(
+                    [
+                        f"same prompt x{case['batch_size']}",
+                        str(case["batch_size"]),
+                        "YES" if case["logits_bitwise_equal"] else "NO",
+                        str(case["max_abs_diff"]),
+                        token_ids,
+                        case["token_hash"],
+                        "YES" if case["output_identical"] else "NO",
+                    ]
+                )
+            else:
+                continuation = textwrap.shorten(
+                    case["generated_text"].replace("\n", " "),
+                    width=52,
+                    placeholder="...",
+                )
+                table_rows.append(
+                    [
+                        case["composition"],
+                        str(case["batch_size"]),
+                        token_ids,
+                        case["token_hash"],
+                        "YES" if case["output_identical"] else "NO",
+                        continuation,
+                    ]
+                )
+        if batch_size_cases:
+            column_labels = [
+                "Batch input",
+                "Batch size",
+                "Logits equal",
+                "Max diff",
+                "8 generated token IDs",
+                "Token hash",
+                "Output equal",
+            ]
+            column_widths = [0.14, 0.07, 0.09, 0.08, 0.27, 0.12, 0.10]
+        else:
+            column_labels = [
+                "Batch composition",
+                "Batch",
+                "8 generated token IDs",
+                "Token hash",
+                "Identical",
+                "Continuation",
+            ]
+            column_widths = [0.17, 0.06, 0.25, 0.10, 0.08, 0.34]
+        table = table_axis.table(
+            cellText=table_rows,
+            colLabels=column_labels,
+            loc="center",
+            cellLoc="left",
+            colWidths=column_widths,
+        )
+        table.auto_set_font_size(False)
+        table.set_fontsize(8.5)
+        table.scale(1, 2.0)
+        table_axis.set_title(
+            (
+                "Candidate rank 44: the identical prompt repeated at batch "
+                "sizes 1, 2, 4, and 8\n"
+                "The first sample's full logits and generated tokens are "
+                "compared with batch size 1."
+                if batch_size_cases
+                else
+                "Candidate rank 44 across five batch compositions\n"
+                "The original eager/SDPA FP16 path diverged at generated token 0."
+            ),
+            pad=12,
+        )
+        fig.tight_layout()
+        path = output / "improved_model_validation.png"
+        fig.savefig(path, dpi=160)
+        plt.close(fig)
+        record_figure(path, [improved_path])
 
     reductions_path = first_existing(
         root, "toy/reduction_order.csv", "reduction_order.csv"

@@ -63,6 +63,13 @@ mkdir -p \
   --keep 100 --max-new-tokens 128 --norm-backends native \
   --candidates-output "$output_dir/determinism/prompt_margin_candidates.csv" \
   --output "$output_dir/determinism/divergence_search.csv"
+"$python_bin" -m src.determinism.improved_model_validation \
+  --checkpoint "$checkpoint" \
+  --candidates-input "$output_dir/determinism/prompt_margin_candidates.csv" \
+  --logits-candidates 20 --generation-rank 44 --max-new-tokens 8 \
+  --batch-sizes 1,2,4,8 \
+  --linear-tile-m 16 --linear-tile-n 256 --linear-k-block-size 480 \
+  --output "$output_dir/determinism/improved_model_validation.csv"
 "$python_bin" -m src.toy.reduction_order \
   --repeats 10 \
   --output "$output_dir/toy/reduction_order.csv"

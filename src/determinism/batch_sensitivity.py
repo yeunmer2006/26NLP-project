@@ -95,10 +95,24 @@ def encode_batch(
 
 
 @torch.inference_mode()
-def target_logits(model, tokenizer, prompts: list[str], device: torch.device) -> torch.Tensor:
+def target_logits(
+    model,
+    tokenizer,
+    prompts: list[str],
+    device: torch.device,
+    select_logits: bool = False,
+) -> torch.Tensor:
     input_ids, attention_mask, lengths = encode_batch(
         prompts, tokenizer, device, model.config.max_position_embeddings
     )
+    if select_logits:
+        positions = torch.tensor(lengths, device=device) - 1
+        logits = model(
+            input_ids,
+            attention_mask=attention_mask,
+            logits_positions=positions,
+        )["logits"]
+        return logits[0].cpu()
     logits = model(input_ids, attention_mask=attention_mask)["logits"]
     return logits[0, lengths[0] - 1].float().cpu()
 
@@ -110,6 +124,7 @@ def batch_greedy_generate(
     prompts: list[str],
     max_new_tokens: int,
     device: torch.device,
+    select_logits: bool = False,
 ) -> list[list[int]]:
     prompt_limit = model.config.max_position_embeddings - max_new_tokens
     if prompt_limit < 1:
@@ -119,11 +134,24 @@ def batch_greedy_generate(
     )
     generated = [[] for _ in prompts]
     active = torch.ones(len(prompts), dtype=torch.bool, device=device)
-    output = model(input_ids, attention_mask=attention_mask, use_cache=True)
+    if select_logits:
+        positions = torch.tensor(lengths, device=device) - 1
+        output = model(
+            input_ids,
+            attention_mask=attention_mask,
+            use_cache=True,
+            logits_positions=positions,
+        )
+    else:
+        output = model(input_ids, attention_mask=attention_mask, use_cache=True)
     logits = output["logits"]
     past_key_values = output["past_key_values"]
-    row_indices = torch.arange(len(prompts), device=device)
-    next_tokens = logits[row_indices, torch.tensor(lengths, device=device) - 1].argmax(dim=-1)
+    if select_logits:
+        next_tokens = logits.argmax(dim=-1)
+    else:
+        row_indices = torch.arange(len(prompts), device=device)
+        positions = torch.tensor(lengths, device=device) - 1
+        next_tokens = logits[row_indices, positions].argmax(dim=-1)
 
     for step in range(max_new_tokens):
         for row, token in enumerate(next_tokens.tolist()):

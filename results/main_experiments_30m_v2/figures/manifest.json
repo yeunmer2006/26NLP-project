@@ -7,6 +7,7 @@
     "results/main_experiments_30m_v2/figures/matmul_latency.png",
     "results/main_experiments_30m_v2/figures/matmul_invariance.png",
     "results/main_experiments_30m_v2/figures/batch_sensitivity.png",
+    "results/main_experiments_30m_v2/figures/improved_model_validation.png",
     "results/main_experiments_30m_v2/figures/reduction_error.png",
     "results/main_experiments_30m_v2/figures/fixed_tree_runtime.png"
   ],
@@ -51,6 +52,12 @@
       "figure": "results/main_experiments_30m_v2/figures/batch_sensitivity.png",
       "sources": [
         "results/main_experiments_30m_v2/determinism/batch_sensitivity.csv"
+      ]
+    },
+    {
+      "figure": "results/main_experiments_30m_v2/figures/improved_model_validation.png",
+      "sources": [
+        "results/main_experiments_30m_v2/determinism/improved_model_validation.json"
       ]
     },
     {

@@ -1,0 +1,237 @@
+{
+  "checkpoint": "results/train_30m/best_checkpoint.pt",
+  "candidates_input": "results/main_experiments_30m_v2/determinism/prompt_margin_candidates.csv",
+  "device": "cuda",
+  "dtype": "float16",
+  "configuration": {
+    "attention_backend": "flash_attn_2_bi",
+    "rms_norm_backend": "fixed_tree",
+    "linear_backend": "fixed_tile",
+    "attention_fixed_split_size": 64,
+    "linear_tile_m": 16,
+    "linear_tile_n": 256,
+    "linear_k_block_size": 480,
+    "logits_candidates": 20,
+    "logits_compositions": [
+      "A_target_only",
+      "C_seven_short",
+      "E_mixed_lengths"
+    ],
+    "generation_rank": 44,
+    "generation_compositions": [
+      "A_target_only",
+      "B_one_short",
+      "C_seven_short",
+      "D_one_long",
+      "E_mixed_lengths"
+    ],
+    "batch_sizes": [
+      1,
+      2,
+      4,
+      8
+    ],
+    "max_new_tokens": 8
+  },
+  "logits_summary": {
+    "tested_cases": 60,
+    "bitwise_equal_cases": 60,
+    "nonzero_difference_cases": 0,
+    "top1_changed_cases": 0,
+    "top5_changed_cases": 0,
+    "maximum_absolute_difference": 0.0
+  },
+  "generation_summary": {
+    "tested_cases": 5,
+    "identical_cases": 5,
+    "all_outputs_identical": true
+  },
+  "generation_cases": [
+    {
+      "candidate_rank": 44,
+      "composition": "A_target_only",
+      "batch_size": 1,
+      "token_ids": [
+        7907,
+        10,
+        2470,
+        30,
+        133,
+        1177,
+        7899,
+        62
+      ],
+      "token_hash": "5ced54c07fcc",
+      "generated_text": ", the sugar was very hot. He",
+      "output_identical": true,
+      "first_divergence_token": ""
+    },
+    {
+      "candidate_rank": 44,
+      "composition": "B_one_short",
+      "batch_size": 2,
+      "token_ids": [
+        7907,
+        10,
+        2470,
+        30,
+        133,
+        1177,
+        7899,
+        62
+      ],
+      "token_hash": "5ced54c07fcc",
+      "generated_text": ", the sugar was very hot. He",
+      "output_identical": true,
+      "first_divergence_token": ""
+    },
+    {
+      "candidate_rank": 44,
+      "composition": "C_seven_short",
+      "batch_size": 8,
+      "token_ids": [
+        7907,
+        10,
+        2470,
+        30,
+        133,
+        1177,
+        7899,
+        62
+      ],
+      "token_hash": "5ced54c07fcc",
+      "generated_text": ", the sugar was very hot. He",
+      "output_identical": true,
+      "first_divergence_token": ""
+    },
+    {
+      "candidate_rank": 44,
+      "composition": "D_one_long",
+      "batch_size": 2,
+      "token_ids": [
+        7907,
+        10,
+        2470,
+        30,
+        133,
+        1177,
+        7899,
+        62
+      ],
+      "token_hash": "5ced54c07fcc",
+      "generated_text": ", the sugar was very hot. He",
+      "output_identical": true,
+      "first_divergence_token": ""
+    },
+    {
+      "candidate_rank": 44,
+      "composition": "E_mixed_lengths",
+      "batch_size": 4,
+      "token_ids": [
+        7907,
+        10,
+        2470,
+        30,
+        133,
+        1177,
+        7899,
+        62
+      ],
+      "token_hash": "5ced54c07fcc",
+      "generated_text": ", the sugar was very hot. He",
+      "output_identical": true,
+      "first_divergence_token": ""
+    }
+  ],
+  "batch_size_summary": {
+    "tested_cases": 4,
+    "bitwise_equal_cases": 4,
+    "identical_generation_cases": 4,
+    "all_logits_bitwise_equal": true,
+    "all_outputs_identical": true
+  },
+  "batch_size_cases": [
+    {
+      "candidate_rank": 44,
+      "batch_size": 1,
+      "logits_bitwise_equal": true,
+      "max_abs_diff": 0.0,
+      "token_ids": [
+        7907,
+        10,
+        2470,
+        30,
+        133,
+        1177,
+        7899,
+        62
+      ],
+      "token_hash": "5ced54c07fcc",
+      "generated_text": ", the sugar was very hot. He",
+      "output_identical": true,
+      "first_divergence_token": ""
+    },
+    {
+      "candidate_rank": 44,
+      "batch_size": 2,
+      "logits_bitwise_equal": true,
+      "max_abs_diff": 0.0,
+      "token_ids": [
+        7907,
+        10,
+        2470,
+        30,
+        133,
+        1177,
+        7899,
+        62
+      ],
+      "token_hash": "5ced54c07fcc",
+      "generated_text": ", the sugar was very hot. He",
+      "output_identical": true,
+      "first_divergence_token": ""
+    },
+    {
+      "candidate_rank": 44,
+      "batch_size": 4,
+      "logits_bitwise_equal": true,
+      "max_abs_diff": 0.0,
+      "token_ids": [
+        7907,
+        10,
+        2470,
+        30,
+        133,
+        1177,
+        7899,
+        62
+      ],
+      "token_hash": "5ced54c07fcc",
+      "generated_text": ", the sugar was very hot. He",
+      "output_identical": true,
+      "first_divergence_token": ""
+    },
+    {
+      "candidate_rank": 44,
+      "batch_size": 8,
+      "logits_bitwise_equal": true,
+      "max_abs_diff": 0.0,
+      "token_ids": [
+        7907,
+        10,
+        2470,
+        30,
+        133,
+        1177,
+        7899,
+        62
+      ],
+      "token_hash": "5ced54c07fcc",
+      "generated_text": ", the sugar was very hot. He",
+      "output_identical": true,
+      "first_divergence_token": ""
+    }
+  ],
+  "total_case_elapsed_seconds": 177.57999059599024,
+  "last_run_elapsed_seconds": 0.00016252100249403156
+}

@@ -582,7 +582,10 @@ class TinyLlama(nn.Module):
         attention_mask: torch.Tensor | None = None,
         past_key_values: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
         use_cache: bool = False,
+        logits_positions: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor | None]:
+        if labels is not None and logits_positions is not None:
+            raise ValueError("logits_positions cannot be used when labels are provided")
         past_len = 0 if past_key_values is None else past_key_values[0][0].shape[-2]
         if input_ids.shape[1] + past_len > self.config.max_position_embeddings:
             raise ValueError("sequence length exceeds max_position_embeddings")
@@ -603,7 +606,13 @@ class TinyLlama(nn.Module):
                 presents.append(present)
             else:
                 hidden_states = layer_output
-        logits = self.lm_head(self.norm(hidden_states))
+        hidden_states = self.norm(hidden_states)
+        if logits_positions is not None:
+            if logits_positions.ndim != 1 or logits_positions.shape[0] != input_ids.shape[0]:
+                raise ValueError("logits_positions must have shape [batch_size]")
+            row_indices = torch.arange(input_ids.shape[0], device=input_ids.device)
+            hidden_states = hidden_states[row_indices, logits_positions]
+        logits = self.lm_head(hidden_states)
         loss = None
         if labels is not None:
             loss = F.cross_entropy(

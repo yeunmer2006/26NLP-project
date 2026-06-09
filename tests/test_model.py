@@ -22,6 +22,53 @@ def test_model_forward_and_loss() -> None:
     assert output["loss"].ndim == 0
 
 
+def test_selected_logits_match_fixed_order_full_forward() -> None:
+    torch.manual_seed(0)
+    config = ModelConfig(
+        vocab_size=31,
+        hidden_size=16,
+        intermediate_size=32,
+        num_hidden_layers=1,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        max_position_embeddings=8,
+        attention_backend="flash_attn_2_bi",
+        rms_norm_backend="fixed_tree",
+        linear_backend="fixed_tile",
+        linear_tile_m=2,
+        linear_tile_n=16,
+        linear_k_block_size=16,
+    )
+    model = TinyLlama(config).eval()
+    input_ids = torch.randint(0, config.vocab_size, (3, 6))
+    positions = torch.tensor([5, 3, 1])
+    full = model(input_ids)["logits"]
+    selected = model(input_ids, logits_positions=positions)["logits"]
+    expected = full[torch.arange(input_ids.shape[0]), positions]
+    assert torch.equal(selected, expected)
+
+
+def test_selected_logits_reject_labels() -> None:
+    model = TinyLlama(
+        ModelConfig(
+            vocab_size=31,
+            hidden_size=16,
+            intermediate_size=32,
+            num_hidden_layers=1,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            max_position_embeddings=8,
+        )
+    )
+    input_ids = torch.randint(0, 31, (1, 3))
+    try:
+        model(input_ids, labels=input_ids, logits_positions=torch.tensor([2]))
+    except ValueError as error:
+        assert "logits_positions" in str(error)
+    else:
+        raise AssertionError("expected labels/logits_positions validation error")
+
+
 def test_padding_does_not_shift_target_positions() -> None:
     torch.manual_seed(0)
     config = ModelConfig(
@@ -129,6 +176,7 @@ def test_batch_invariant_linear_is_batch_invariant() -> None:
         tile_n=5,
         k_block_size=4,
     )
+    torch.nn.init.normal_(layer.weight)
     target = torch.randn(1, 1, 17)
     mixed = torch.randn(6, 1, 17)
     mixed[0] = target[0]
