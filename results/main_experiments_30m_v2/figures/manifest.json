@@ -1,6 +1,5 @@
 {
   "generated": [
-    "results/main_experiments_30m_v2/figures/training.png",
     "results/main_experiments_30m_v2/figures/attention_latency.png",
     "results/main_experiments_30m_v2/figures/attention_invariance.png",
     "results/main_experiments_30m_v2/figures/rmsnorm_latency.png",
@@ -12,12 +11,6 @@
     "results/main_experiments_30m_v2/figures/fixed_tree_runtime.png"
   ],
   "artifacts": [
-    {
-      "figure": "results/main_experiments_30m_v2/figures/training.png",
-      "sources": [
-        "results/train_30m/training_metrics.csv"
-      ]
-    },
     {
       "figure": "results/main_experiments_30m_v2/figures/attention_latency.png",
       "sources": [

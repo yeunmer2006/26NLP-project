@@ -415,15 +415,15 @@ def main() -> None:
                   if row.get("status") == "ok" and row.get("repeat") == "1"]
     if reductions:
         labels = [f"{row['dtype']}:{row['method']}" for row in reductions]
-        errors = [max(float(row["absolute_error"]), 1e-12) for row in reductions]
+        errors = [max(float(row["relative_error"]), 1e-12) for row in reductions]
         fig, axis = plt.subplots(figsize=(10, 4))
         axis.bar(labels, errors)
         axis.set_yscale("log")
         axis.tick_params(axis="x", rotation=45)
         axis.set(
-            ylabel="absolute error (log)",
-            title="Reduction-order error",
-            xlabel="Error vs. the exact sum of each dtype's quantized input.",
+            ylabel="relative error (log)",
+            title="Reduction-order error (relative)",
+            xlabel="Relative error vs. the exact sum of each dtype's quantized input.",
         )
         fig.tight_layout()
         path = output / "reduction_error.png"
